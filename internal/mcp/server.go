@@ -138,15 +138,15 @@ func handleListAccountsAndFolders(db *sql.DB, cfg *config.Config) server.ToolHan
 
 func toolGetRecentActivity() mcp.Tool {
 	return mcp.NewTool("get_recent_activity",
-		mcp.WithDescription("Returns the most recently received emails, optionally filtered by account and/or folder."),
+		mcp.WithDescription("Returns the N most recently received emails across ALL folders and accounts, sorted by date descending. All parameters are optional filters — omit them to get a global view across everything."),
 		mcp.WithString("account",
-			mcp.Description("Filter by account ID. Omit to include all accounts."),
+			mcp.Description("Optional: restrict to a specific account ID. Omit to include all accounts."),
 		),
 		mcp.WithString("folder",
-			mcp.Description("Filter by IMAP folder name."),
+			mcp.Description("Optional: restrict to a specific IMAP folder (e.g. INBOX). Omit to include all folders."),
 		),
 		mcp.WithNumber("limit",
-			mcp.Description("Maximum number of results (default 20, max 100)."),
+			mcp.Description("Optional: maximum number of results. Defaults to 10. Max 100. Always set this explicitly when the user asks for a specific number."),
 		),
 	)
 }
@@ -170,9 +170,9 @@ func handleGetRecentActivity(db *sql.DB) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		account := req.GetString("account", "")
 		folder := req.GetString("folder", "")
-		limit := int(req.GetFloat("limit", 20))
+		limit := int(req.GetFloat("limit", 10))
 		if limit <= 0 || limit > 100 {
-			limit = 20
+			limit = 10
 		}
 
 		qb := &queryBuilder{}
@@ -325,7 +325,7 @@ func toolSearchEmails() mcp.Tool {
 			mcp.Description("Filter by IMAP folder name."),
 		),
 		mcp.WithNumber("limit",
-			mcp.Description("Maximum number of results (default 20, max 100)."),
+			mcp.Description("Optional: maximum number of results. Defaults to 10. Max 100. Always set this explicitly when the user asks for a specific number."),
 		),
 		mcp.WithBoolean("include_body",
 			mcp.Description("If true, include the plain-text body of each email in the results."),
@@ -343,10 +343,10 @@ func handleSearchEmails(db *sql.DB) server.ToolHandlerFunc {
 		dateFrom := req.GetString("date_from", "")
 		dateTo := req.GetString("date_to", "")
 		folder := req.GetString("folder", "")
-		limit := int(req.GetFloat("limit", 20))
+		limit := int(req.GetFloat("limit", 10))
 		includeBody := req.GetBool("include_body", false)
 		if limit <= 0 || limit > 100 {
-			limit = 20
+			limit = 10
 		}
 
 		bodyExpr := `''`

@@ -91,17 +91,28 @@ Credentials can be stored as plain text or as `$ENV_VAR` references that are res
 
 ## Integrating with an AI Agent
 
-Configure your MCP client to launch the server via stdio. Example for Claude Desktop (`claude_desktop_config.json`):
+Configure your MCP client to launch the server via stdio. 
+
+Example for Claude Desktop (`claude_desktop_config.json`):
 
 ```json
 {
   "mcpServers": {
-    "mail-shadow": {
+    "mail_shadow": {
       "command": "/path/to/mail-shadow-mcp",
       "args": ["serve", "--config", "/path/to/config.yaml"]
     }
   }
 }
+```
+
+Example for Hermes Agent (`config.yaml`):
+
+```yaml
+mcp_servers:
+  mail_shadow:
+    command: "/path/to/mail-shadow-mcp"
+    args: ["serve", "--config", "/path/to/config.yaml"]
 ```
 
 ---
