@@ -162,6 +162,10 @@ type mailSummary struct {
 	Attachments  []attachmentDetail `json:"attachments"`
 }
 
+// fetchAttachmentsSubquery is reused across the read handlers
+const fetchAttachmentsSubquery = `COALESCE((SELECT json_group_array(json_object('filename',COALESCE(filename,''),'content_type',COALESCE(content_type,''),'size_bytes',COALESCE(size_bytes,0)))
+			           FROM mail_attachments WHERE entry_id = e.id), '[]')`
+
 func handleGetRecentActivity(db *sql.DB) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		account := req.GetString("account", "")
@@ -172,17 +176,16 @@ func handleGetRecentActivity(db *sql.DB) server.ToolHandlerFunc {
 		}
 
 		qb := &queryBuilder{}
-		qb.write(`SELECT id, account_id, imap_folder, subject, sender, recipients_to, date_utc,
-			COALESCE((SELECT json_group_array(json_object('filename',COALESCE(filename,''),'content_type',COALESCE(content_type,''),'size_bytes',COALESCE(size_bytes,0)))
-			           FROM mail_attachments WHERE entry_id = mail_entries.id), '[]')
-			FROM mail_entries WHERE 1=1`)
+		qb.write(`SELECT e.id, e.account_id, e.imap_folder, e.subject, e.sender, e.recipients_to, e.date_utc, ` +
+			fetchAttachmentsSubquery +
+			` FROM mail_entries e WHERE 1=1`)
 		if account != "" {
-			qb.and("account_id = ?", account)
+			qb.and("e.account_id = ?", account)
 		}
 		if folder != "" {
-			qb.and("imap_folder = ?", folder)
+			qb.and("e.imap_folder = ?", folder)
 		}
-		qb.write(` ORDER BY date_utc DESC NULLS LAST LIMIT ?`)
+		qb.write(` ORDER BY e.date_utc DESC NULLS LAST LIMIT ?`)
 		qb.args = append(qb.args, limit)
 
 		rows, err := db.QueryContext(ctx, qb.sql(), qb.args...)
@@ -346,14 +349,11 @@ func handleSearchEmails(db *sql.DB) server.ToolHandlerFunc {
 			limit = 20
 		}
 
-		attSubquery := `COALESCE((SELECT json_group_array(json_object('filename',COALESCE(filename,''),'content_type',COALESCE(content_type,''),'size_bytes',COALESCE(size_bytes,0)))
-			           FROM mail_attachments WHERE entry_id = e.id), '[]')`
-
 		bodyExpr := `''`
 		if includeBody {
 			bodyExpr = `COALESCE((SELECT body_text FROM mail_content WHERE entry_id = e.id), '')`
 		}
-		selectClause := `SELECT e.id, e.account_id, e.imap_folder, e.subject, e.sender, e.recipients_to, e.date_utc, ` + attSubquery + `, ` + bodyExpr
+		selectClause := `SELECT e.id, e.account_id, e.imap_folder, e.subject, e.sender, e.recipients_to, e.date_utc, ` + fetchAttachmentsSubquery + `, ` + bodyExpr
 
 		qb := &queryBuilder{}
 

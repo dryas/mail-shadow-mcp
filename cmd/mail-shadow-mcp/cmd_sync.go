@@ -1,10 +1,10 @@
 // MAIL-SHADOW-MCP — Structured, read-only email access for AI agents.
 //
-// Copyright (c) 2026 Benjamin Kaiser. 
+// Copyright (c) 2026 Benjamin Kaiser.
 // SPDX-License-Identifier: Apache-2.0
 // https://github.com/dryas/mail-shadow-mcp
 //
-// cmd_sync.go: 
+// cmd_sync.go:
 // Implements the "sync" subcommand. Runs a one-shot IMAP sync
 // across all configured accounts and exits with code 0 (success) or 1 (any
 // account failed). Useful for cron jobs or one-off imports.

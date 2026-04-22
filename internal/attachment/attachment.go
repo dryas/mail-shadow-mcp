@@ -17,6 +17,7 @@ package attachment
 import (
 	"encoding/base64"
 	"fmt"
+	"io"
 	"log/slog"
 	"mime/quotedprintable"
 	"os"
@@ -199,23 +200,14 @@ func walkParts(bs imap.BodyStructure, path []int, out *[]partInfo) {
 func decodeTransfer(data []byte, encoding string) ([]byte, error) {
 	switch encoding {
 	case "base64":
-		// Strip CRLF line breaks before decoding.
+		// Strip newlines and spaces before decoding.
 		clean := strings.ReplaceAll(string(data), "\r\n", "")
 		clean = strings.ReplaceAll(clean, "\n", "")
-		return base64.StdEncoding.DecodeString(strings.TrimSpace(clean))
+		clean = strings.ReplaceAll(clean, " ", "")
+		return base64.StdEncoding.DecodeString(clean)
 	case "quoted-printable":
 		r := quotedprintable.NewReader(strings.NewReader(string(data)))
-		var out []byte
-		buf := make([]byte, 4096)
-		for {
-			n, err := r.Read(buf)
-			if n > 0 {
-				out = append(out, buf[:n]...)
-			}
-			if err != nil {
-				break
-			}
-		}
+		out, _ := io.ReadAll(r)
 		return out, nil
 	default:
 		// "7bit", "8bit", "binary" — no transform needed.
