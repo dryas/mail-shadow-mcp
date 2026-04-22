@@ -1,0 +1,25 @@
+sync_interval_min: 15
+
+database:
+  path: "data/mail.db"      # path to the local SQLite shadow database
+
+attachment_dir: "data/attachments"  # base directory for downloaded attachments
+
+accounts:
+  - id: "work@example.com"
+    host: "imap.example.com"
+    port: 993
+    username: "work@example.com"
+    password: "$WORK_IMAP_PASS"     # or plain text; prefix with $ to read from env var
+    tls_mode: tls                   # tls (default, implicit TLS, port 993)
+                                    # starttls (STARTTLS upgrade, port 143)
+                                    # none (no encryption — localhost/testing only)
+    tls_skip_verify: false          # set true for self-signed certificates
+    folders: ["INBOX", "Archive"]   # optional: omit to sync all folders
+
+  - id: "personal@gmail.com"
+    host: "imap.gmail.com"
+    port: 993
+    username: "personal@gmail.com"
+    password: "$PERSONAL_IMAP_PASS"
+    tls_mode: tls

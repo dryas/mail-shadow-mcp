@@ -1,0 +1,13 @@
+# Runtime data — never commit
+/data/*.db
+
+# AI agent memory — local only
+/memory-bank/
+
+# Real config with credentials — never commit
+config.yaml
+
+# Build output
+/dist/
+/mail-shadow-mcp
+/mail-shadow-mcp.exe

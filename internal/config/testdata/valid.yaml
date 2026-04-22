@@ -1,0 +1,13 @@
+sync_interval_min: 10
+accounts:
+  - id: "work@example.com"
+    host: "imap.example.com"
+    port: 993
+    username: "work@example.com"
+    password: "hardcoded_password"
+    folders: ["INBOX", "Archive"]
+  - id: "personal@example.com"
+    host: "imap.example.com"
+    port: 993
+    username: "personal@example.com"
+    password: "$TEST_IMAP_PASS"

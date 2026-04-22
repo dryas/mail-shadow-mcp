@@ -1,0 +1,2 @@
+# This file ensures the /data directory is tracked by Git.
+# The actual database files (*.db) are excluded via .gitignore.
