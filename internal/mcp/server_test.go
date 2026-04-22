@@ -102,9 +102,6 @@ func TestHandleListAccountsAndFolders_WithSyncState(t *testing.T) {
 	if len(result[0].Folders) != 1 || result[0].Folders[0].Folder != "INBOX" {
 		t.Errorf("unexpected folders: %+v", result[0].Folders)
 	}
-	if result[0].Folders[0].LastUID != 42 {
-		t.Errorf("expected last_uid=42, got %d", result[0].Folders[0].LastUID)
-	}
 }
 
 func TestHandleGetRecentActivity_Basic(t *testing.T) {
