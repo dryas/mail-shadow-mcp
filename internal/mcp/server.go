@@ -84,8 +84,7 @@ func toolListAccountsAndFolders() mcp.Tool {
 }
 
 type folderInfo struct {
-	Folder  string `json:"folder"`
-	LastUID int64  `json:"last_uid"`
+	Folder string `json:"folder"`
 }
 
 type accountInfo struct {
@@ -112,7 +111,7 @@ func handleListAccountsAndFolders(db *sql.DB, cfg *config.Config) server.ToolHan
 			if _, ok := byAccount[aid]; !ok {
 				byAccount[aid] = &accountInfo{AccountID: aid}
 			}
-			byAccount[aid].Folders = append(byAccount[aid].Folders, folderInfo{Folder: folder, LastUID: lastUID})
+			byAccount[aid].Folders = append(byAccount[aid].Folders, folderInfo{Folder: folder})
 		}
 
 		// Add accounts from config that have no sync state yet.
@@ -272,6 +271,12 @@ func handleGetEmailContent(db *sql.DB) server.ToolHandlerFunc {
 		if rawDate.Valid {
 			s := rawDate.Time.UTC().Format(time.RFC3339)
 			m.DateUTC = &s
+		}
+
+		// Truncate very large bodies to avoid flooding the agent context window.
+		const maxBodyRunes = 20_000
+		if runes := []rune(m.BodyText); len(runes) > maxBodyRunes {
+			m.BodyText = string(runes[:maxBodyRunes]) + "\n[... truncated]"
 		}
 
 		attRows, err := db.QueryContext(ctx,
