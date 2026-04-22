@@ -306,7 +306,7 @@ func toolSearchEmails() mcp.Tool {
 	return mcp.NewTool("search_emails",
 		mcp.WithDescription("Full-text search across email subjects and bodies, with optional filters."),
 		mcp.WithString("query",
-			mcp.Description("Full-text search term (matched against subject and body via FTS5)."),
+			mcp.Description("Full-text search term. Searches across both the email subject AND the full message body (via FTS5). Leave empty to use metadata filters only."),
 		),
 		mcp.WithString("account",
 			mcp.Description("Filter by account ID."),
