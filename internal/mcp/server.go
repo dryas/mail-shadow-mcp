@@ -33,10 +33,10 @@ import (
 
 // New creates and returns a configured MCP server with all tools registered.
 // db is the open SQLite connection; cfg is the loaded configuration.
-func New(db *sql.DB, cfg *config.Config) *server.MCPServer {
+func New(db *sql.DB, cfg *config.Config, version string) *server.MCPServer {
 	s := server.NewMCPServer(
 		"mail-shadow-mcp",
-		"1.0.0",
+		version,
 		server.WithToolCapabilities(false),
 	)
 

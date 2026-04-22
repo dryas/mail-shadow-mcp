@@ -99,7 +99,7 @@ func cmdServe(args []string) {
 		}
 	}()
 
-	mcpSrv := mcpserver.New(database, cfg)
+	mcpSrv := mcpserver.New(database, cfg, version)
 	if err := server.ServeStdio(mcpSrv); err != nil {
 		fmt.Fprintf(os.Stderr, "mail-shadow-mcp: server error: %v\n", err)
 		os.Exit(1)
