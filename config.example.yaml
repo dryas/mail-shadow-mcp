@@ -17,9 +17,9 @@ accounts:
     tls_skip_verify: false          # set true for self-signed certificates
     folders: ["INBOX", "Archive"]   # optional: omit to sync all folders
 
-  - id: "personal@gmail.com"
-    host: "imap.gmail.com"
+  - id: "personal@example.com"
+    host: "imap.example.com"
     port: 993
-    username: "personal@gmail.com"
+    username: "personal@example.com"
     password: "$PERSONAL_IMAP_PASS"
     tls_mode: tls
