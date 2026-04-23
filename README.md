@@ -3,7 +3,7 @@
 > Structured, read-only email access for AI agents.
 
 [![Build](https://github.com/dryas/mail-shadow-mcp/actions/workflows/release.yml/badge.svg)](https://github.com/dryas/mail-shadow-mcp/actions/workflows/release.yml)
-[![Latest Release](https://img.shields.io/github/v/release/benja/mail-shadow-mcp)](https://github.com/dryas/mail-shadow-mcp/releases/latest)
+[![Latest Release](https://img.shields.io/github/v/release/dryas/mail-shadow-mcp)](https://github.com/dryas/mail-shadow-mcp/releases/latest)
 [![Go Version](https://img.shields.io/badge/go-1.25+-blue)](https://go.dev/)
 [![Go Report Card](https://goreportcard.com/badge/github.com/dryas/mail-shadow-mcp)](https://goreportcard.com/report/github.com/dryas/mail-shadow-mcp)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
