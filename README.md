@@ -115,6 +115,20 @@ mcp_servers:
     args: ["serve", "--config", "/path/to/config.yaml"]
 ```
 
+Example for OpenClaw (`~/.openclaw/openclaw.json`):
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "/path/to/mail-shadow-mcp",
+      "args": ["serve", "--config", "/path/to/config.yaml"],
+      "transport": "stdio"
+    }
+  }
+}
+```
+
 ---
 
 ## TLS Modes
