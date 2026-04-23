@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/benja/mail-shadow-mcp/internal/db"
+	"github.com/dryas/mail-shadow-mcp/internal/db"
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
 )

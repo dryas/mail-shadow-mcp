@@ -18,7 +18,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/benja/mail-shadow-mcp/internal/db"
+	"github.com/dryas/mail-shadow-mcp/internal/db"
 )
 
 func cmdQuery(args []string) {

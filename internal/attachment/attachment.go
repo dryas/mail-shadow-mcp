@@ -27,8 +27,8 @@ import (
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
 
-	"github.com/benja/mail-shadow-mcp/internal/config"
-	imapsync "github.com/benja/mail-shadow-mcp/internal/sync"
+	"github.com/dryas/mail-shadow-mcp/internal/config"
+	imapsync "github.com/dryas/mail-shadow-mcp/internal/sync"
 )
 
 // DownloadedFile describes a single saved attachment.

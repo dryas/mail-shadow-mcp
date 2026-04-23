@@ -17,9 +17,9 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/benja/mail-shadow-mcp/internal/config"
-	"github.com/benja/mail-shadow-mcp/internal/db"
-	imapsync "github.com/benja/mail-shadow-mcp/internal/sync"
+	"github.com/dryas/mail-shadow-mcp/internal/config"
+	"github.com/dryas/mail-shadow-mcp/internal/db"
+	imapsync "github.com/dryas/mail-shadow-mcp/internal/sync"
 )
 
 func cmdSync(args []string) {

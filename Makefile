@@ -1,5 +1,5 @@
 BINARY     := mail-shadow-mcp
-MODULE     := github.com/benja/mail-shadow-mcp
+MODULE     := github.com/dryas/mail-shadow-mcp
 CMD        := ./cmd/mail-shadow-mcp
 VERSION    ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS    := -ldflags "-s -w -X main.version=$(VERSION)"

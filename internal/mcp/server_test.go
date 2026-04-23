@@ -17,8 +17,8 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 
-	"github.com/benja/mail-shadow-mcp/internal/config"
-	"github.com/benja/mail-shadow-mcp/internal/db"
+	"github.com/dryas/mail-shadow-mcp/internal/config"
+	"github.com/dryas/mail-shadow-mcp/internal/db"
 )
 
 // openTestDB prepares an in-memory SQLite database for handler tests.

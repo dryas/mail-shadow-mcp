@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/benja/mail-shadow-mcp/internal/config"
+	"github.com/dryas/mail-shadow-mcp/internal/config"
 )
 
 // AccountResult holds the outcome of syncing a single account.

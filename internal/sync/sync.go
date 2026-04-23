@@ -33,7 +33,7 @@ import (
 	"github.com/emersion/go-imap/v2/imapclient"
 	"github.com/emersion/go-sasl"
 
-	"github.com/benja/mail-shadow-mcp/internal/config"
+	"github.com/dryas/mail-shadow-mcp/internal/config"
 )
 
 // Client wraps an authenticated IMAP connection for a single account.

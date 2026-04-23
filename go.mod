@@ -1,4 +1,4 @@
-module github.com/benja/mail-shadow-mcp
+module github.com/dryas/mail-shadow-mcp
 
 go 1.25.0
 

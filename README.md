@@ -2,6 +2,12 @@
 
 > Structured, read-only email access for AI agents.
 
+[![Build](https://github.com/dryas/mail-shadow-mcp/actions/workflows/release.yml/badge.svg)](https://github.com/dryas/mail-shadow-mcp/actions/workflows/release.yml)
+[![Latest Release](https://img.shields.io/github/v/release/benja/mail-shadow-mcp)](https://github.com/dryas/mail-shadow-mcp/releases/latest)
+[![Go Version](https://img.shields.io/badge/go-1.25+-blue)](https://go.dev/)
+[![Go Report Card](https://goreportcard.com/badge/github.com/dryas/mail-shadow-mcp)](https://goreportcard.com/report/github.com/dryas/mail-shadow-mcp)
+[![License](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
+
 **mail-shadow-mcp** is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that creates a local shadow copy of your IMAP mailboxes in a SQLite database. AI agents query the local database through five well-defined MCP tools instead of connecting directly to your IMAP server.
 
 ```
@@ -42,7 +48,7 @@ make build          # current platform
 make release        # cross-compile for all platforms into dist/
 ```
 
-Requires Go 1.21+.
+Requires Go 1.25+.
 
 ### 2. Configure
 
@@ -120,7 +126,7 @@ Example for OpenClaw (`~/.openclaw/openclaw.json`):
 ```json
 {
   "mcpServers": {
-    "filesystem": {
+    "mail_shadow": {
       "command": "/path/to/mail-shadow-mcp",
       "args": ["serve", "--config", "/path/to/config.yaml"],
       "transport": "stdio"

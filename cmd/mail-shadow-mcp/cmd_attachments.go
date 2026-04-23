@@ -17,8 +17,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/benja/mail-shadow-mcp/internal/attachment"
-	"github.com/benja/mail-shadow-mcp/internal/config"
+	"github.com/dryas/mail-shadow-mcp/internal/attachment"
+	"github.com/dryas/mail-shadow-mcp/internal/config"
 )
 
 func cmdAttachments(args []string) {

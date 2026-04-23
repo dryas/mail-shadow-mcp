@@ -19,10 +19,10 @@ import (
 
 	"github.com/mark3labs/mcp-go/server"
 
-	"github.com/benja/mail-shadow-mcp/internal/config"
-	"github.com/benja/mail-shadow-mcp/internal/db"
-	mcpserver "github.com/benja/mail-shadow-mcp/internal/mcp"
-	imapsync "github.com/benja/mail-shadow-mcp/internal/sync"
+	"github.com/dryas/mail-shadow-mcp/internal/config"
+	"github.com/dryas/mail-shadow-mcp/internal/db"
+	mcpserver "github.com/dryas/mail-shadow-mcp/internal/mcp"
+	imapsync "github.com/dryas/mail-shadow-mcp/internal/sync"
 )
 
 func cmdServe(args []string) {

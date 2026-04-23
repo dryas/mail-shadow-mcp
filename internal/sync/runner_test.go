@@ -11,7 +11,7 @@ package imapsync
 import (
 	"testing"
 
-	"github.com/benja/mail-shadow-mcp/internal/config"
+	"github.com/dryas/mail-shadow-mcp/internal/config"
 )
 
 // fakeClient is a stub that satisfies the folder-listing contract used by resolveFolders.
