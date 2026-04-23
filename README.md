@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="img/logo.png" alt="mail-shadow-mcp logo" width="200" />
+</div>
+
 # mail-shadow-mcp
 
 > Structured, read-only email access for AI agents.
