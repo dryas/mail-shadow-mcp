@@ -115,7 +115,6 @@ func (c *Client) ListFolders() ([]string, error) {
 func (c *Client) SyncFolder(db *sql.DB, folder string) error {
 	logger := slog.With("account", c.cfg.ID, "folder", folder)
 
-	// Load the last synced UID from the database.
 	lastUID, err := getLastUID(db, c.cfg.ID, folder)
 	if err != nil {
 		return fmt.Errorf("sync: get last_uid: %w", err)
@@ -129,92 +128,20 @@ func (c *Client) SyncFolder(db *sql.DB, folder string) error {
 		return fmt.Errorf("sync: select folder %q: %w", folder, err)
 	}
 
-	// UIDValidity check — if the server reassigned UIDs, purge and re-sync.
-	if uint32(selData.UIDValidity) > 0 {
-		storedValidity, err := getStoredUIDValidity(db, c.cfg.ID, folder)
-		if err != nil {
-			return fmt.Errorf("sync: get uid_validity: %w", err)
-		}
-		if storedValidity > 0 && storedValidity != uint32(selData.UIDValidity) {
-			logger.Warn("UIDValidity changed — purging stale data and re-syncing",
-				"stored", storedValidity, "server", selData.UIDValidity)
-			if _, err := db.Exec(
-				`DELETE FROM mail_entries WHERE account_id = ? AND imap_folder = ?`,
-				c.cfg.ID, folder,
-			); err != nil {
-				return fmt.Errorf("sync: purge stale entries: %w", err)
-			}
-			if _, err := db.Exec(
-				`UPDATE sync_state SET last_uid = 0, uid_validity = ? WHERE account_id = ? AND imap_folder = ?`,
-				uint32(selData.UIDValidity), c.cfg.ID, folder,
-			); err != nil {
-				return fmt.Errorf("sync: reset sync_state: %w", err)
-			}
-			lastUID = 0
-		}
+	lastUID, err = checkAndResetUIDValidity(db, logger, c.cfg.ID, folder, lastUID, selData)
+	if err != nil {
+		return err
 	}
+
 	if selData.NumMessages == 0 {
 		logger.Debug("folder empty, skipping")
 		return nil
 	}
 
-	// Build a UID set for all UIDs greater than lastUID.
-	var uidSet imap.UIDSet
-	uidSet.AddRange(imap.UID(lastUID+1), 0) // 0 means "*" (highest UID)
-
-	fetchOptions := &imap.FetchOptions{
-		UID:           true,
-		Envelope:      true,
-		InternalDate:  true,
-		BodyStructure: &imap.FetchItemBodyStructure{Extended: true},
-		// Peek: fetch full body text without marking messages as \Seen on the server.
-		// BODY[TEXT] returns all body content (headers excluded); extractBodyText
-		// then picks only text/plain parts via BodyStructure to avoid base64 noise.
-		BodySection: []*imap.FetchItemBodySection{
-			{Specifier: imap.PartSpecifierText, Peek: true},
-		},
+	msgs, err := c.fetchNewMessages(logger, lastUID, int(selData.NumMessages))
+	if err != nil {
+		return err
 	}
-
-	// Stream messages one by one so we can report fetch progress.
-	fetchCmd := c.client.Fetch(uidSet, fetchOptions)
-	defer fetchCmd.Close()
-
-	expected := int(selData.NumMessages) // upper bound; actual new = expected - lastUID msgs
-	const progressInterval = 50
-	var msgs []*imapclient.FetchMessageBuffer
-	fetchWindowStart := time.Now()
-	for {
-		msg := fetchCmd.Next()
-		if msg == nil {
-			break
-		}
-		buf, err := msg.Collect()
-		if err != nil {
-			logger.Warn("fetch error, aborting batch", "received_so_far", len(msgs), "err", err)
-			break
-		}
-		msgs = append(msgs, buf)
-		n := len(msgs)
-		if n%progressInterval == 0 {
-			elapsed := time.Since(fetchWindowStart)
-			logger.Info("fetching...",
-				"received", n,
-				"mailbox_total", expected,
-				"last_50_ms", elapsed.Milliseconds(),
-			)
-			fetchWindowStart = time.Now()
-		}
-	}
-	if err := fetchCmd.Close(); err != nil {
-		// "No messages in range" is not a real error — the server may return
-		// a NO response if the UID range is beyond the current messages.
-		if strings.Contains(err.Error(), "NO") || strings.Contains(err.Error(), "BAD") {
-			logger.Info("folder up to date, no new messages")
-			return nil
-		}
-		return fmt.Errorf("sync: fetch envelopes: %w", err)
-	}
-
 	if len(msgs) == 0 {
 		logger.Info("folder up to date, no new messages")
 		return nil
@@ -229,143 +156,248 @@ func (c *Client) SyncFolder(db *sql.DB, folder string) error {
 		logger.Warn("could not disable FTS automerge", "err", err)
 	}
 
-	// Insert messages in batches to keep transactions small and SQLite fast.
-	// Each committed batch also advances last_uid so a restart won't re-import.
 	const batchSize = 500
 	var totalMaxUID uint32
-
 	for batchStart := 0; batchStart < total; batchStart += batchSize {
 		batchEnd := batchStart + batchSize
 		if batchEnd > total {
 			batchEnd = total
 		}
-		batch := msgs[batchStart:batchEnd]
-
-		tx, err := db.Begin()
+		batchMax, err := c.importMessageBatch(db, logger, folder, msgs[batchStart:batchEnd], batchStart, total)
 		if err != nil {
-			return fmt.Errorf("sync: begin transaction: %w", err)
+			return err
 		}
-
-		// Prepare statements once per batch — avoids re-parsing SQL on every row.
-		stmtEntry, err := tx.Prepare(`
-			INSERT OR IGNORE INTO mail_entries
-				(id, account_id, imap_uid, imap_folder, subject, sender,
-				 recipients_to, recipients_cc, date_utc)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-		if err != nil {
-			tx.Rollback()
-			return fmt.Errorf("sync: prepare entry stmt: %w", err)
-		}
-		stmtFTSIns, err := tx.Prepare(`INSERT INTO mail_content_fts (entry_id, subject, body_text) VALUES (?, ?, ?)`)
-		if err != nil {
-			tx.Rollback()
-			return fmt.Errorf("sync: prepare fts ins stmt: %w", err)
-		}
-		stmtContentIns, err := tx.Prepare(`INSERT OR IGNORE INTO mail_content (entry_id, body_text) VALUES (?, ?)`)
-		if err != nil {
-			tx.Rollback()
-			return fmt.Errorf("sync: prepare content ins stmt: %w", err)
-		}
-		stmtAtt, err := tx.Prepare(`INSERT OR IGNORE INTO mail_attachments (entry_id, filename, content_type, size_bytes) VALUES (?, ?, ?, ?)`)
-		if err != nil {
-			tx.Rollback()
-			return fmt.Errorf("sync: prepare att stmt: %w", err)
-		}
-
-		var batchMaxUID uint32
-		dbWindowStart := time.Now()
-		for j, msg := range batch {
-			if msg.Envelope == nil {
-				continue
-			}
-
-			uid := uint32(msg.UID)
-			entry := buildEntry(c.cfg.ID, folder, uid, msg)
-
-			res, err := stmtEntry.Exec(
-				entry.ID, entry.AccountID, entry.IMAPUID, entry.IMAPFolder,
-				entry.Subject, entry.Sender, entry.RecipientsTo, entry.RecipientsCC,
-				entry.DateUTC,
-			)
-			if err != nil {
-				tx.Rollback()
-				return fmt.Errorf("sync: insert entry uid=%d: %w", uid, err)
-			}
-
-			// Only index in FTS if the entry was genuinely new (rows affected = 1).
-			// Skipping the DELETE+INSERT for already-indexed entries is the key
-			// performance win — FTS5 DELETE is extremely expensive at scale.
-			if n, _ := res.RowsAffected(); n > 0 {
-				body := extractBodyText(msg)
-				if _, err := stmtFTSIns.Exec(entry.ID, entry.Subject, body); err != nil {
-					tx.Rollback()
-					return fmt.Errorf("sync: fts insert uid=%d: %w", uid, err)
-				}
-				if _, err := stmtContentIns.Exec(entry.ID, body); err != nil {
-					tx.Rollback()
-					return fmt.Errorf("sync: content insert uid=%d: %w", uid, err)
-				}
-				for _, att := range extractAttachments(msg.BodyStructure) {
-					if _, err := stmtAtt.Exec(entry.ID, att.Filename, att.ContentType, att.SizeBytes); err != nil {
-						tx.Rollback()
-						return fmt.Errorf("sync: insert attachment uid=%d: %w", uid, err)
-					}
-				}
-			}
-
-			if uid > batchMaxUID {
-				batchMaxUID = uid
-			}
-
-			done := batchStart + j + 1
-			if done%progressInterval == 0 || done == total {
-				logger.Info("import progress",
-					"processed", done,
-					"total", total,
-					"percent", done*100/total,
-					"last_50_db_ms", time.Since(dbWindowStart).Milliseconds(),
-				)
-				dbWindowStart = time.Now()
-			}
-		}
-
-		if batchMaxUID > 0 {
-			if err := updateLastUID(tx, c.cfg.ID, folder, batchMaxUID); err != nil {
-				tx.Rollback()
-				return fmt.Errorf("sync: update last_uid: %w", err)
-			}
-		}
-
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("sync: commit batch: %w", err)
-		}
-
-		if batchMaxUID > totalMaxUID {
-			totalMaxUID = batchMaxUID
+		if batchMax > totalMaxUID {
+			totalMaxUID = batchMax
 		}
 	}
 
 	logger.Info("sync complete, optimizing FTS index...", "new_messages", total, "max_uid", totalMaxUID)
+	persistUIDValidity(db, logger, c.cfg.ID, folder, uint32(selData.UIDValidity))
+	optimizeFTS(db, logger)
+	logger.Info("sync complete", "new_messages", total, "max_uid", totalMaxUID)
+	return nil
+}
 
-	// Persist UIDValidity so we can detect server-side mailbox rebuilds on next sync.
-	if uint32(selData.UIDValidity) > 0 {
-		if _, err := db.Exec(
-			`INSERT INTO sync_state (account_id, imap_folder, last_uid, uid_validity) VALUES (?, ?, 0, ?)
-			ON CONFLICT(account_id, imap_folder) DO UPDATE SET uid_validity = excluded.uid_validity`,
-			c.cfg.ID, folder, uint32(selData.UIDValidity),
-		); err != nil {
-			logger.Warn("could not persist uid_validity", "err", err)
+// checkAndResetUIDValidity compares the server UIDValidity against the stored value.
+// If they differ the local data is purged and lastUID is reset to 0.
+func checkAndResetUIDValidity(db *sql.DB, logger *slog.Logger, accountID, folder string, lastUID uint32, selData *imap.SelectData) (uint32, error) {
+	if uint32(selData.UIDValidity) == 0 {
+		return lastUID, nil
+	}
+	storedValidity, err := getStoredUIDValidity(db, accountID, folder)
+	if err != nil {
+		return 0, fmt.Errorf("sync: get uid_validity: %w", err)
+	}
+	if storedValidity == 0 || storedValidity == uint32(selData.UIDValidity) {
+		return lastUID, nil
+	}
+	logger.Warn("UIDValidity changed — purging stale data and re-syncing",
+		"stored", storedValidity, "server", selData.UIDValidity)
+	if _, err := db.Exec(
+		`DELETE FROM mail_entries WHERE account_id = ? AND imap_folder = ?`,
+		accountID, folder,
+	); err != nil {
+		return 0, fmt.Errorf("sync: purge stale entries: %w", err)
+	}
+	if _, err := db.Exec(
+		`UPDATE sync_state SET last_uid = 0, uid_validity = ? WHERE account_id = ? AND imap_folder = ?`,
+		uint32(selData.UIDValidity), accountID, folder,
+	); err != nil {
+		return 0, fmt.Errorf("sync: reset sync_state: %w", err)
+	}
+	return 0, nil
+}
+
+// fetchNewMessages streams all messages with UID > lastUID from the server.
+func (c *Client) fetchNewMessages(logger *slog.Logger, lastUID uint32, expected int) ([]*imapclient.FetchMessageBuffer, error) {
+	var uidSet imap.UIDSet
+	uidSet.AddRange(imap.UID(lastUID+1), 0) // 0 means "*" (highest UID)
+
+	fetchOptions := &imap.FetchOptions{
+		UID:           true,
+		Envelope:      true,
+		InternalDate:  true,
+		BodyStructure: &imap.FetchItemBodyStructure{Extended: true},
+		// Peek: fetch full body text without marking messages as \Seen on the server.
+		BodySection: []*imap.FetchItemBodySection{
+			{Specifier: imap.PartSpecifierText, Peek: true},
+		},
+	}
+
+	fetchCmd := c.client.Fetch(uidSet, fetchOptions)
+	defer fetchCmd.Close()
+
+	const progressInterval = 50
+	var msgs []*imapclient.FetchMessageBuffer
+	fetchWindowStart := time.Now()
+	for {
+		msg := fetchCmd.Next()
+		if msg == nil {
+			break
+		}
+		buf, err := msg.Collect()
+		if err != nil {
+			logger.Warn("fetch error, aborting batch", "received_so_far", len(msgs), "err", err)
+			break
+		}
+		msgs = append(msgs, buf)
+		if n := len(msgs); n%progressInterval == 0 {
+			logger.Info("fetching...",
+				"received", n,
+				"mailbox_total", expected,
+				"last_50_ms", time.Since(fetchWindowStart).Milliseconds(),
+			)
+			fetchWindowStart = time.Now()
 		}
 	}
+	if err := fetchCmd.Close(); err != nil {
+		if strings.Contains(err.Error(), "NO") || strings.Contains(err.Error(), "BAD") {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("sync: fetch envelopes: %w", err)
+	}
+	return msgs, nil
+}
+
+// importMessageBatch writes one slice of fetched messages into a single DB transaction.
+func (c *Client) importMessageBatch(db *sql.DB, logger *slog.Logger, folder string, batch []*imapclient.FetchMessageBuffer, batchStart, total int) (uint32, error) {
+	tx, err := db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("sync: begin transaction: %w", err)
+	}
+
+	stmts, err := prepareBatchStmts(tx)
+	if err != nil {
+		tx.Rollback()
+		return 0, err
+	}
+
+	const progressInterval = 50
+	var batchMaxUID uint32
+	dbWindowStart := time.Now()
+	for j, msg := range batch {
+		if msg.Envelope == nil {
+			continue
+		}
+		uid := uint32(msg.UID)
+		entry := buildEntry(c.cfg.ID, folder, uid, msg)
+
+		res, err := stmts.entry.Exec(
+			entry.ID, entry.AccountID, entry.IMAPUID, entry.IMAPFolder,
+			entry.Subject, entry.Sender, entry.RecipientsTo, entry.RecipientsCC,
+			entry.DateUTC,
+		)
+		if err != nil {
+			tx.Rollback()
+			return 0, fmt.Errorf("sync: insert entry uid=%d: %w", uid, err)
+		}
+
+		// Only index in FTS if the entry was genuinely new (rows affected = 1).
+		if n, _ := res.RowsAffected(); n > 0 {
+			if err := indexNewMessage(tx, stmts, entry, msg, uid); err != nil {
+				tx.Rollback()
+				return 0, err
+			}
+		}
+
+		if uid > batchMaxUID {
+			batchMaxUID = uid
+		}
+		done := batchStart + j + 1
+		if done%progressInterval == 0 || done == total {
+			logger.Info("import progress",
+				"processed", done, "total", total,
+				"percent", done*100/total,
+				"last_50_db_ms", time.Since(dbWindowStart).Milliseconds(),
+			)
+			dbWindowStart = time.Now()
+		}
+	}
+
+	if batchMaxUID > 0 {
+		if err := updateLastUID(tx, c.cfg.ID, folder, batchMaxUID); err != nil {
+			tx.Rollback()
+			return 0, fmt.Errorf("sync: update last_uid: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("sync: commit batch: %w", err)
+	}
+	return batchMaxUID, nil
+}
+
+// batchStmts holds pre-compiled statements for a single import transaction.
+type batchStmts struct {
+	entry      *sql.Stmt
+	ftsIns     *sql.Stmt
+	contentIns *sql.Stmt
+	att        *sql.Stmt
+}
+
+func prepareBatchStmts(tx *sql.Tx) (*batchStmts, error) {
+	entry, err := tx.Prepare(`
+		INSERT OR IGNORE INTO mail_entries
+			(id, account_id, imap_uid, imap_folder, subject, sender,
+			 recipients_to, recipients_cc, date_utc)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return nil, fmt.Errorf("sync: prepare entry stmt: %w", err)
+	}
+	ftsIns, err := tx.Prepare(`INSERT INTO mail_content_fts (entry_id, subject, body_text) VALUES (?, ?, ?)`)
+	if err != nil {
+		return nil, fmt.Errorf("sync: prepare fts ins stmt: %w", err)
+	}
+	contentIns, err := tx.Prepare(`INSERT OR IGNORE INTO mail_content (entry_id, body_text) VALUES (?, ?)`)
+	if err != nil {
+		return nil, fmt.Errorf("sync: prepare content ins stmt: %w", err)
+	}
+	att, err := tx.Prepare(`INSERT OR IGNORE INTO mail_attachments (entry_id, filename, content_type, size_bytes) VALUES (?, ?, ?, ?)`)
+	if err != nil {
+		return nil, fmt.Errorf("sync: prepare att stmt: %w", err)
+	}
+	return &batchStmts{entry: entry, ftsIns: ftsIns, contentIns: contentIns, att: att}, nil
+}
+
+// indexNewMessage inserts FTS, content, and attachment rows for a newly imported message.
+func indexNewMessage(tx *sql.Tx, stmts *batchStmts, entry mailEntry, msg *imapclient.FetchMessageBuffer, uid uint32) error {
+	body := extractBodyText(msg)
+	if _, err := stmts.ftsIns.Exec(entry.ID, entry.Subject, body); err != nil {
+		return fmt.Errorf("sync: fts insert uid=%d: %w", uid, err)
+	}
+	if _, err := stmts.contentIns.Exec(entry.ID, body); err != nil {
+		return fmt.Errorf("sync: content insert uid=%d: %w", uid, err)
+	}
+	for _, att := range extractAttachments(msg.BodyStructure) {
+		if _, err := stmts.att.Exec(entry.ID, att.Filename, att.ContentType, att.SizeBytes); err != nil {
+			return fmt.Errorf("sync: insert attachment uid=%d: %w", uid, err)
+		}
+	}
+	return nil
+}
+
+// persistUIDValidity saves the server UIDValidity value to sync_state.
+func persistUIDValidity(db *sql.DB, logger *slog.Logger, accountID, folder string, validity uint32) {
+	if validity == 0 {
+		return
+	}
+	if _, err := db.Exec(
+		`INSERT INTO sync_state (account_id, imap_folder, last_uid, uid_validity) VALUES (?, ?, 0, ?)
+		ON CONFLICT(account_id, imap_folder) DO UPDATE SET uid_validity = excluded.uid_validity`,
+		accountID, folder, validity,
+	); err != nil {
+		logger.Warn("could not persist uid_validity", "err", err)
+	}
+}
+
+// optimizeFTS runs FTS5 optimize and re-enables auto-merge.
+func optimizeFTS(db *sql.DB, logger *slog.Logger) {
 	if _, err := db.Exec(`INSERT INTO mail_content_fts(mail_content_fts) VALUES('optimize')`); err != nil {
 		logger.Warn("FTS optimize failed", "err", err)
 	}
-	// Re-enable automerge for incremental syncs.
 	if _, err := db.Exec(`INSERT INTO mail_content_fts(mail_content_fts, rank) VALUES('automerge', 8)`); err != nil {
 		logger.Warn("could not re-enable FTS automerge", "err", err)
 	}
-	logger.Info("sync complete", "new_messages", total, "max_uid", totalMaxUID)
-	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -512,17 +544,24 @@ func extractBodyText(msg *imapclient.FetchMessageBuffer) string {
 		return ""
 	}
 
-	// For non-multipart messages decode transfer encoding and return.
 	mp, ok := msg.BodyStructure.(*imap.BodyStructureMultiPart)
 	if !ok {
-		enc := ""
-		if sp, ok2 := msg.BodyStructure.(*imap.BodyStructureSinglePart); ok2 {
-			enc = sp.Encoding
-		}
-		return strings.TrimSpace(decodeBody(raw, enc))
+		return extractSinglePartText(raw, msg.BodyStructure)
 	}
+	return extractMultipartText(raw, mp)
+}
 
-	// Extract boundary from BodyStructure and use mime/multipart to walk parts.
+// extractSinglePartText decodes a non-multipart body using its transfer encoding.
+func extractSinglePartText(raw []byte, bs imap.BodyStructure) string {
+	enc := ""
+	if sp, ok := bs.(*imap.BodyStructureSinglePart); ok {
+		enc = sp.Encoding
+	}
+	return strings.TrimSpace(decodeBody(raw, enc))
+}
+
+// extractMultipartText collects text/plain parts from a multipart body using the MIME boundary.
+func extractMultipartText(raw []byte, mp *imap.BodyStructureMultiPart) string {
 	var boundary string
 	if mp.Extended != nil {
 		boundary = mp.Extended.Params["boundary"]
@@ -547,8 +586,7 @@ func extractBodyText(msg *imapclient.FetchMessageBuffer) string {
 				if sb.Len() > 0 {
 					sb.WriteString("\n")
 				}
-				cte := part.Header.Get("Content-Transfer-Encoding")
-				sb.WriteString(decodeBody(b, cte))
+				sb.WriteString(decodeBody(b, part.Header.Get("Content-Transfer-Encoding")))
 			}
 		}
 	}

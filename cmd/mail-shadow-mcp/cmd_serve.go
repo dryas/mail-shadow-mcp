@@ -11,6 +11,7 @@
 package main
 
 import (
+	"database/sql"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -48,24 +49,9 @@ func cmdServe(args []string) {
 		os.Exit(1)
 	}
 
-	dbPath := cfg.Database.Path
-	if dbPath == "" {
-		dbPath = "data/mail.db"
-	}
-
-	database, err := db.Open(dbPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "mail-shadow-mcp: open db: %v\n", err)
-		os.Exit(1)
-	}
+	database := openDatabase(cfg)
 	defer database.Close()
 
-	if err := db.Migrate(database); err != nil {
-		fmt.Fprintf(os.Stderr, "mail-shadow-mcp: migrate db: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Ensure attachment directory exists before the first download attempt.
 	if err := os.MkdirAll(cfg.AttachmentDir, 0o755); err != nil {
 		fmt.Fprintf(os.Stderr, "mail-shadow-mcp: create attachment_dir: %v\n", err)
 		os.Exit(1)
@@ -76,11 +62,10 @@ func cmdServe(args []string) {
 		syncInterval = time.Duration(cfg.SyncIntervalMin) * time.Minute
 	}
 
-	// Banner to stderr so it doesn't interfere with stdio JSON-RPC.
 	fmt.Fprintf(os.Stderr, banner, version)
 	slog.Info("mail-shadow-mcp starting",
 		"version", version,
-		"db", dbPath,
+		"db", cfg.Database.Path,
 		"accounts", len(cfg.Accounts),
 		"sync_interval", syncInterval,
 	)
@@ -97,7 +82,6 @@ func cmdServe(args []string) {
 	}
 
 	go runSync()
-
 	go func() {
 		ticker := time.NewTicker(syncInterval)
 		defer ticker.Stop()
@@ -106,19 +90,43 @@ func cmdServe(args []string) {
 		}
 	}()
 
-	var dlServer *fileserver.Server
-	if cfg.FileServerPort > 0 {
-		var fsErr error
-		dlServer, fsErr = fileserver.New(cfg.FileServerPort, cfg.FileServerTTL, cfg.FileServerHost)
-		if fsErr != nil {
-			fmt.Fprintf(os.Stderr, "mail-shadow-mcp: start fileserver: %v\n", fsErr)
-			os.Exit(1)
-		}
-	}
+	dlServer := startFileServer(cfg)
 
 	mcpSrv := mcpserver.New(database, cfg, version, dlServer)
 	if err := server.ServeStdio(mcpSrv); err != nil {
 		fmt.Fprintf(os.Stderr, "mail-shadow-mcp: server error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// openDatabase opens and migrates the SQLite database, exiting on error.
+func openDatabase(cfg *config.Config) *sql.DB {
+	dbPath := cfg.Database.Path
+	if dbPath == "" {
+		dbPath = "data/mail.db"
+	}
+	database, err := db.Open(dbPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mail-shadow-mcp: open db: %v\n", err)
+		os.Exit(1)
+	}
+	if err := db.Migrate(database); err != nil {
+		database.Close()
+		fmt.Fprintf(os.Stderr, "mail-shadow-mcp: migrate db: %v\n", err)
+		os.Exit(1)
+	}
+	return database
+}
+
+// startFileServer starts the optional attachment download server if configured.
+func startFileServer(cfg *config.Config) *fileserver.Server {
+	if cfg.FileServerPort <= 0 {
+		return nil
+	}
+	srv, err := fileserver.New(cfg.FileServerPort, cfg.FileServerTTL, cfg.FileServerHost)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mail-shadow-mcp: start fileserver: %v\n", err)
+		os.Exit(1)
+	}
+	return srv
 }

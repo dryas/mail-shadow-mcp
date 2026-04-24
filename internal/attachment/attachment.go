@@ -51,7 +51,6 @@ type partInfo struct {
 // given message, and saves them under baseDir/<sanitized_email_id>/.
 // Returns info about every saved file. Returns nil, nil if there are no attachments.
 func DownloadForEmail(cfg *config.Config, accountID, folder string, uid uint32, baseDir string) ([]DownloadedFile, error) {
-	// Find account config.
 	var acc *config.AccountConfig
 	for i := range cfg.Accounts {
 		if cfg.Accounts[i].ID == accountID {
@@ -63,21 +62,45 @@ func DownloadForEmail(cfg *config.Config, accountID, folder string, uid uint32, 
 		return nil, fmt.Errorf("attachment: unknown account %q", accountID)
 	}
 
-	// Dial IMAP using the same client factory as the sync package.
-	syncClient, err := imapsync.NewClient(*acc)
+	syncClient, c, uidSet, parts, err := prepareIMAPForEmail(*acc, folder, uid)
 	if err != nil {
-		return nil, fmt.Errorf("attachment: connect: %w", err)
+		return nil, err
 	}
 	defer syncClient.Close()
 
-	c := syncClient.RawClient()
-
-	// EXAMINE is read-only — won't mark anything as \Seen.
-	if _, err := c.Select(folder, &imap.SelectOptions{ReadOnly: true}).Wait(); err != nil {
-		return nil, fmt.Errorf("attachment: select folder %q: %w", folder, err)
+	if len(parts) == 0 {
+		return nil, nil
 	}
 
-	// Fetch BODYSTRUCTURE for this specific UID.
+	emailID := sanitizeDirName(fmt.Sprintf("%s_%s_%d", accountID, folder, uid))
+	outDir := filepath.Join(baseDir, emailID)
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		return nil, fmt.Errorf("attachment: create dir %q: %w", outDir, err)
+	}
+
+	var saved []DownloadedFile
+	for _, p := range parts {
+		if df := saveAttachmentPart(c, uidSet, p, uid, outDir); df != nil {
+			saved = append(saved, *df)
+		}
+	}
+	return saved, nil
+}
+
+// prepareIMAPForEmail connects, selects the folder, fetches BODYSTRUCTURE, and
+// returns the open client (caller must Close), UIDSet, and attachment parts.
+func prepareIMAPForEmail(acc config.AccountConfig, folder string, uid uint32) (*imapsync.Client, *imapclient.Client, imap.UIDSet, []partInfo, error) {
+	syncClient, err := imapsync.NewClient(acc)
+	if err != nil {
+		return nil, nil, imap.UIDSet{}, nil, fmt.Errorf("attachment: connect: %w", err)
+	}
+	c := syncClient.RawClient()
+
+	if _, err := c.Select(folder, &imap.SelectOptions{ReadOnly: true}).Wait(); err != nil {
+		syncClient.Close()
+		return nil, nil, imap.UIDSet{}, nil, fmt.Errorf("attachment: select folder %q: %w", folder, err)
+	}
+
 	var uidSet imap.UIDSet
 	uidSet.AddNum(imap.UID(uid))
 
@@ -87,59 +110,49 @@ func DownloadForEmail(cfg *config.Config, accountID, folder string, uid uint32, 
 	})
 	msgs, err := structCmd.Collect()
 	if err != nil || len(msgs) == 0 {
-		return nil, fmt.Errorf("attachment: fetch bodystructure uid=%d: %w", uid, err)
+		syncClient.Close()
+		return nil, nil, imap.UIDSet{}, nil, fmt.Errorf("attachment: fetch bodystructure uid=%d: %w", uid, err)
 	}
-
 	parts := collectAttachmentParts(msgs[0].BodyStructure)
-	if len(parts) == 0 {
-		return nil, nil
+	return syncClient, c, uidSet, parts, nil
+}
+
+// saveAttachmentPart fetches, decodes, and writes one attachment part to disk.
+// Returns nil if the part could not be saved.
+func saveAttachmentPart(c *imapclient.Client, uidSet imap.UIDSet, p partInfo, uid uint32, outDir string) *DownloadedFile {
+	raw, err := fetchPart(c, uidSet, p.path)
+	if err != nil {
+		slog.Warn("attachment: could not fetch part", "uid", uid, "path", p.path, "err", err)
+		return nil
 	}
 
-	// Output dir: baseDir/<account>_<folder>_<uid>
-	emailID := sanitizeDirName(fmt.Sprintf("%s_%s_%d", accountID, folder, uid))
-	outDir := filepath.Join(baseDir, emailID)
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		return nil, fmt.Errorf("attachment: create dir %q: %w", outDir, err)
+	decoded, err := decodeTransfer(raw, p.encoding)
+	if err != nil {
+		slog.Warn("attachment: decode failed, storing raw", "uid", uid, "filename", p.filename, "err", err)
+		decoded = raw
 	}
 
-	var saved []DownloadedFile
-	for _, p := range parts {
-		raw, err := fetchPart(c, uidSet, p.path)
-		if err != nil {
-			slog.Warn("attachment: could not fetch part", "uid", uid, "path", p.path, "err", err)
-			continue
+	filename := sanitizeFilename(p.filename)
+	if filename == "" {
+		nums := make([]string, len(p.path))
+		for i, n := range p.path {
+			nums[i] = fmt.Sprintf("%d", n)
 		}
-
-		decoded, err := decodeTransfer(raw, p.encoding)
-		if err != nil {
-			slog.Warn("attachment: decode failed, storing raw", "uid", uid, "filename", p.filename, "err", err)
-			decoded = raw
-		}
-
-		filename := sanitizeFilename(p.filename)
-		if filename == "" {
-			nums := make([]string, len(p.path))
-			for i, n := range p.path {
-				nums[i] = fmt.Sprintf("%d", n)
-			}
-			filename = "part_" + strings.Join(nums, "_")
-		}
-		outPath := filepath.Join(outDir, filename)
-
-		if err := os.WriteFile(outPath, decoded, 0o644); err != nil {
-			slog.Warn("attachment: write failed", "path", outPath, "err", err)
-			continue
-		}
-
-		saved = append(saved, DownloadedFile{
-			Filename:    filename,
-			Path:        outPath,
-			ContentType: p.contentType,
-			SizeBytes:   int64(len(decoded)),
-		})
-		slog.Info("attachment saved", "path", outPath, "bytes", len(decoded))
+		filename = "part_" + strings.Join(nums, "_")
 	}
-	return saved, nil
+	outPath := filepath.Join(outDir, filename)
+
+	if err := os.WriteFile(outPath, decoded, 0o644); err != nil {
+		slog.Warn("attachment: write failed", "path", outPath, "err", err)
+		return nil
+	}
+	slog.Info("attachment saved", "path", outPath, "bytes", len(decoded))
+	return &DownloadedFile{
+		Filename:    filename,
+		Path:        outPath,
+		ContentType: p.contentType,
+		SizeBytes:   int64(len(decoded)),
+	}
 }
 
 // fetchPart retrieves a single MIME body part by path using UID FETCH BODY.PEEK[path].

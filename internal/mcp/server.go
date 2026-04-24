@@ -368,73 +368,96 @@ func toolSearchEmails() mcp.Tool {
 	)
 }
 
+// searchParams holds the parsed parameters for a search_emails request.
+type searchParams struct {
+	query, account, subject, sender, recipient string
+	dateFrom, dateTo, folder, hasAttachments   string
+	limit, offset                              int
+	includeBody                                bool
+}
+
+func parseSearchParams(req mcp.CallToolRequest) searchParams {
+	p := searchParams{
+		query:          req.GetString("query", ""),
+		account:        req.GetString("account", ""),
+		subject:        req.GetString("subject", ""),
+		sender:         req.GetString("sender", ""),
+		recipient:      req.GetString("recipient", ""),
+		dateFrom:       req.GetString("date_from", ""),
+		dateTo:         req.GetString("date_to", ""),
+		folder:         req.GetString("folder", ""),
+		limit:          int(req.GetFloat("limit", 10)),
+		offset:         int(req.GetFloat("offset", 0)),
+		includeBody:    req.GetBool("include_body", false),
+		hasAttachments: req.GetString("has_attachments", ""),
+	}
+	if p.limit <= 0 || p.limit > 100 {
+		p.limit = 10
+	}
+	if p.offset < 0 {
+		p.offset = 0
+	}
+	return p
+}
+
+func buildSearchQuery(p searchParams) *queryBuilder {
+	bodyExpr := `''`
+	if p.includeBody {
+		bodyExpr = `COALESCE((SELECT body_text FROM mail_content WHERE entry_id = e.id), '')`
+	}
+	selectClause := `SELECT e.id, e.account_id, e.imap_folder, e.subject, e.sender, e.recipients_to, e.date_utc, ` + fetchAttachmentsSubquery + `, ` + bodyExpr
+
+	qb := &queryBuilder{}
+	if p.query != "" {
+		qb.write(selectClause + `
+		FROM mail_entries e
+		WHERE e.id IN (SELECT entry_id FROM mail_content_fts WHERE mail_content_fts MATCH ?)`)
+		qb.args = append(qb.args, p.query)
+	} else {
+		qb.write(selectClause + ` FROM mail_entries e WHERE 1=1`)
+	}
+
+	if p.account != "" {
+		qb.and("e.account_id = ?", p.account)
+	}
+	if p.subject != "" {
+		qb.and("e.subject LIKE ?", "%"+p.subject+"%")
+	}
+	if p.sender != "" {
+		qb.and("e.sender LIKE ?", "%"+p.sender+"%")
+	}
+	if p.recipient != "" {
+		qb.and("(e.recipients_to LIKE ? OR e.recipients_cc LIKE ?)", "%"+p.recipient+"%", "%"+p.recipient+"%")
+	}
+	if p.dateFrom != "" {
+		qb.and("e.date_utc >= ?", p.dateFrom)
+	}
+	if p.dateTo != "" {
+		qb.and("e.date_utc <= ?", p.dateTo)
+	}
+	if p.folder != "" {
+		qb.and("e.imap_folder = ?", p.folder)
+	}
+	applyAttachmentFilter(qb, p.hasAttachments)
+
+	qb.write(` ORDER BY e.date_utc DESC NULLS LAST LIMIT ? OFFSET ?`)
+	qb.args = append(qb.args, p.limit, p.offset)
+	return qb
+}
+
+func applyAttachmentFilter(qb *queryBuilder, hasAttachments string) {
+	switch hasAttachments {
+	case "true":
+		qb.and("EXISTS (SELECT 1 FROM mail_attachments WHERE entry_id = e.id)")
+	case "false":
+		qb.and("NOT EXISTS (SELECT 1 FROM mail_attachments WHERE entry_id = e.id)")
+	}
+}
+
 func handleSearchEmails(db *sql.DB) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		query := req.GetString("query", "")
-		account := req.GetString("account", "")
-		subject := req.GetString("subject", "")
-		sender := req.GetString("sender", "")
-		recipient := req.GetString("recipient", "")
-		dateFrom := req.GetString("date_from", "")
-		dateTo := req.GetString("date_to", "")
-		folder := req.GetString("folder", "")
-		limit := int(req.GetFloat("limit", 10))
-		offset := int(req.GetFloat("offset", 0))
-		includeBody := req.GetBool("include_body", false)
-		hasAttachments := req.GetString("has_attachments", "")
-		if limit <= 0 || limit > 100 {
-			limit = 10
-		}
-		if offset < 0 {
-			offset = 0
-		}
-
-		bodyExpr := `''`
-		if includeBody {
-			bodyExpr = `COALESCE((SELECT body_text FROM mail_content WHERE entry_id = e.id), '')`
-		}
-		selectClause := `SELECT e.id, e.account_id, e.imap_folder, e.subject, e.sender, e.recipients_to, e.date_utc, ` + fetchAttachmentsSubquery + `, ` + bodyExpr
-
-		qb := &queryBuilder{}
-
-		if query != "" {
-			qb.write(selectClause + `
-			FROM mail_entries e
-			WHERE e.id IN (SELECT entry_id FROM mail_content_fts WHERE mail_content_fts MATCH ?)`)
-			qb.args = append(qb.args, query)
-		} else {
-			qb.write(selectClause + ` FROM mail_entries e WHERE 1=1`)
-		}
-
-		if account != "" {
-			qb.and("e.account_id = ?", account)
-		}
-		if subject != "" {
-			qb.and("e.subject LIKE ?", "%"+subject+"%")
-		}
-		if sender != "" {
-			qb.and("e.sender LIKE ?", "%"+sender+"%")
-		}
-		if recipient != "" {
-			qb.and("(e.recipients_to LIKE ? OR e.recipients_cc LIKE ?)", "%"+recipient+"%", "%"+recipient+"%")
-		}
-		if dateFrom != "" {
-			qb.and("e.date_utc >= ?", dateFrom)
-		}
-		if dateTo != "" {
-			qb.and("e.date_utc <= ?", dateTo)
-		}
-		if folder != "" {
-			qb.and("e.imap_folder = ?", folder)
-		}
-		if hasAttachments == "true" {
-			qb.and("EXISTS (SELECT 1 FROM mail_attachments WHERE entry_id = e.id)")
-		} else if hasAttachments == "false" {
-			qb.and("NOT EXISTS (SELECT 1 FROM mail_attachments WHERE entry_id = e.id)")
-		}
-
-		qb.write(` ORDER BY e.date_utc DESC NULLS LAST LIMIT ? OFFSET ?`)
-		qb.args = append(qb.args, limit, offset)
+		p := parseSearchParams(req)
+		qb := buildSearchQuery(p)
 
 		rows, err := db.QueryContext(ctx, qb.sql(), qb.args...)
 		if err != nil {
