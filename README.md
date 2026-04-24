@@ -91,6 +91,8 @@ Credentials can be stored as plain text or as `$ENV_VAR` references that are res
 
 # Query from the command line (output is JSON)
 ./mail-shadow-mcp query --subject "invoice" --body "Q1"
+./mail-shadow-mcp query -q "budget" --attachments only   # only emails with attachments
+./mail-shadow-mcp query --recent --attachments none      # recent emails without attachments
 
 # Download attachments for a specific email
 ./mail-shadow-mcp attachments --id "work@example.com:INBOX:42"

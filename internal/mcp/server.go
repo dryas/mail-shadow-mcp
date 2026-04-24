@@ -153,6 +153,9 @@ func toolGetRecentActivity() mcp.Tool {
 		mcp.WithNumber("limit",
 			mcp.Description("Optional: maximum number of results. Defaults to 10. Max 100. Always set this explicitly when the user asks for a specific number."),
 		),
+		mcp.WithString("has_attachments",
+			mcp.Description(`Optional: filter by attachment presence. "true" = only emails with attachments, "false" = only without. Omit to include all.`),
+		),
 	)
 }
 
@@ -176,6 +179,7 @@ func handleGetRecentActivity(db *sql.DB) server.ToolHandlerFunc {
 		account := req.GetString("account", "")
 		folder := req.GetString("folder", "")
 		limit := int(req.GetFloat("limit", 10))
+		hasAttachments := req.GetString("has_attachments", "")
 		if limit <= 0 || limit > 100 {
 			limit = 10
 		}
@@ -189,6 +193,11 @@ func handleGetRecentActivity(db *sql.DB) server.ToolHandlerFunc {
 		}
 		if folder != "" {
 			qb.and("e.imap_folder = ?", folder)
+		}
+		if hasAttachments == "true" {
+			qb.and("EXISTS (SELECT 1 FROM mail_attachments WHERE entry_id = e.id)")
+		} else if hasAttachments == "false" {
+			qb.and("NOT EXISTS (SELECT 1 FROM mail_attachments WHERE entry_id = e.id)")
 		}
 		qb.write(` ORDER BY e.date_utc DESC NULLS LAST LIMIT ?`)
 		qb.args = append(qb.args, limit)
@@ -343,6 +352,9 @@ func toolSearchEmails() mcp.Tool {
 		mcp.WithBoolean("include_body",
 			mcp.Description("If true, include the plain-text body of each email in the results."),
 		),
+		mcp.WithString("has_attachments",
+			mcp.Description(`Optional: filter by attachment presence. "true" = only emails with attachments, "false" = only without. Omit to include all.`),
+		),
 	)
 }
 
@@ -358,6 +370,7 @@ func handleSearchEmails(db *sql.DB) server.ToolHandlerFunc {
 		folder := req.GetString("folder", "")
 		limit := int(req.GetFloat("limit", 10))
 		includeBody := req.GetBool("include_body", false)
+		hasAttachments := req.GetString("has_attachments", "")
 		if limit <= 0 || limit > 100 {
 			limit = 10
 		}
@@ -399,6 +412,11 @@ func handleSearchEmails(db *sql.DB) server.ToolHandlerFunc {
 		}
 		if folder != "" {
 			qb.and("e.imap_folder = ?", folder)
+		}
+		if hasAttachments == "true" {
+			qb.and("EXISTS (SELECT 1 FROM mail_attachments WHERE entry_id = e.id)")
+		} else if hasAttachments == "false" {
+			qb.and("NOT EXISTS (SELECT 1 FROM mail_attachments WHERE entry_id = e.id)")
 		}
 
 		qb.write(` ORDER BY e.date_utc DESC NULLS LAST LIMIT ?`)
