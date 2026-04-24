@@ -38,6 +38,7 @@
 | `get_email_content` | Full body text and attachment list for a single email |
 | `search_emails` | FTS5 full-text search with subject/sender/date filters |
 | `download_attachments` | Fetch attachment files from IMAP and save them to disk |
+| `get_download_link` | Generate a temporary HTTP download URL for attachments (optional fallback) |
 
 ---
 
@@ -148,6 +149,33 @@ Example for OpenClaw (`~/.openclaw/openclaw.json`):
 | `none` | 143 | No encryption — localhost/testing only |
 
 Set `tls_skip_verify: true` to accept self-signed certificates.
+
+---
+
+## Attachment Download Server
+
+The optional built-in HTTP server lets the AI agent generate temporary, single-use download links for attachment files — useful as a fallback when the agent cannot transfer files through its normal communication channels (e.g. WhatsApp, email).
+
+Enable it in `config.yaml`:
+
+```yaml
+fileserver_port: 8787        # TCP port to listen on
+fileserver_ttl_min: 15       # minutes before a link expires (default: 15)
+fileserver_host: "localhost" # hostname/IP shown in generated URLs
+```
+
+When enabled, the `get_download_link` MCP tool becomes available. It downloads the attachments, saves them to `attachment_dir`, and returns one temporary URL per file:
+
+```json
+[
+  {
+    "file": "data/attachments/work@example.com/INBOX/42/invoice.pdf",
+    "url": "http://localhost:8787/dl/3f8a1c.../invoice.pdf"
+  }
+]
+```
+
+Each link is **single-use** and expires after `fileserver_ttl_min` minutes. The tool description instructs the AI agent to prefer direct file transfer and only fall back to this mechanism when necessary.
 
 ---
 

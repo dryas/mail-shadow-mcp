@@ -27,7 +27,10 @@ type DatabaseConfig struct {
 type Config struct {
 	Database        DatabaseConfig  `yaml:"database"`
 	SyncIntervalMin int             `yaml:"sync_interval_min"`
-	AttachmentDir   string          `yaml:"attachment_dir"` // base directory for downloaded attachments
+	AttachmentDir   string          `yaml:"attachment_dir"`     // base directory for downloaded attachments
+	FileServerPort  int             `yaml:"fileserver_port"`    // 0 = disabled; set to e.g. 8787 to enable
+	FileServerTTL   int             `yaml:"fileserver_ttl_min"` // minutes before a download link expires (default 15)
+	FileServerHost  string          `yaml:"fileserver_host"`    // externally reachable hostname/IP (default: localhost)
 	Accounts        []AccountConfig `yaml:"accounts"`
 }
 

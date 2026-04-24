@@ -21,6 +21,7 @@ import (
 
 	"github.com/dryas/mail-shadow-mcp/internal/config"
 	"github.com/dryas/mail-shadow-mcp/internal/db"
+	"github.com/dryas/mail-shadow-mcp/internal/fileserver"
 	mcpserver "github.com/dryas/mail-shadow-mcp/internal/mcp"
 	imapsync "github.com/dryas/mail-shadow-mcp/internal/sync"
 )
@@ -105,7 +106,17 @@ func cmdServe(args []string) {
 		}
 	}()
 
-	mcpSrv := mcpserver.New(database, cfg, version)
+	var dlServer *fileserver.Server
+	if cfg.FileServerPort > 0 {
+		var fsErr error
+		dlServer, fsErr = fileserver.New(cfg.FileServerPort, cfg.FileServerTTL, cfg.FileServerHost)
+		if fsErr != nil {
+			fmt.Fprintf(os.Stderr, "mail-shadow-mcp: start fileserver: %v\n", fsErr)
+			os.Exit(1)
+		}
+	}
+
+	mcpSrv := mcpserver.New(database, cfg, version, dlServer)
 	if err := server.ServeStdio(mcpSrv); err != nil {
 		fmt.Fprintf(os.Stderr, "mail-shadow-mcp: server error: %v\n", err)
 		os.Exit(1)

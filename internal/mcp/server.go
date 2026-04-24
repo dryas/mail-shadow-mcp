@@ -5,13 +5,14 @@
 // https://github.com/dryas/mail-shadow-mcp
 //
 // server.go:
-// Wires five MCP tools onto a mark3labs/mcp-go server:
+// Wires six MCP tools onto a mark3labs/mcp-go server:
 //
 //	list_accounts_and_folders — enumerate synced accounts and folders
 //	get_recent_activity       — N most recent emails, with optional filters
 //	get_email_content         — full body + attachments for a single email
 //	search_emails             — FTS5 full-text search with metadata filters
 //	download_attachments      — fetch attachment files from IMAP on demand
+//	get_download_link         — generate a temporary HTTP download URL for an attachment (fallback only)
 
 // Package mcpserver wires the MCP tools onto a mark3labs/mcp-go server.
 package mcpserver
@@ -29,11 +30,13 @@ import (
 
 	"github.com/dryas/mail-shadow-mcp/internal/attachment"
 	"github.com/dryas/mail-shadow-mcp/internal/config"
+	"github.com/dryas/mail-shadow-mcp/internal/fileserver"
 )
 
 // New creates and returns a configured MCP server with all tools registered.
 // db is the open SQLite connection; cfg is the loaded configuration.
-func New(db *sql.DB, cfg *config.Config, version string) *server.MCPServer {
+// fs may be nil if the file server is disabled.
+func New(db *sql.DB, cfg *config.Config, version string, fs *fileserver.Server) *server.MCPServer {
 	s := server.NewMCPServer(
 		"mail-shadow-mcp",
 		version,
@@ -45,6 +48,9 @@ func New(db *sql.DB, cfg *config.Config, version string) *server.MCPServer {
 	s.AddTool(toolGetEmailContent(), handleGetEmailContent(db))
 	s.AddTool(toolSearchEmails(), handleSearchEmails(db))
 	s.AddTool(toolDownloadAttachments(), handleDownloadAttachments(cfg))
+	if fs != nil {
+		s.AddTool(toolGetDownloadLink(), handleGetDownloadLink(cfg, fs))
+	}
 
 	return s
 }
@@ -487,6 +493,83 @@ func handleDownloadAttachments(cfg *config.Config) server.ToolHandlerFunc {
 		}
 
 		out, _ := json.MarshalIndent(files, "", "  ")
+		return mcp.NewToolResultText(string(out)), nil
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tool: get_download_link
+// ---------------------------------------------------------------------------
+
+func toolGetDownloadLink() mcp.Tool {
+	return mcp.NewTool("get_download_link",
+		mcp.WithDescription(
+			"FALLBACK ONLY: Generates a temporary HTTP download URL for the attachments of an email. "+
+				"IMPORTANT: Only use this tool if (a) the user explicitly asked for a download link, OR "+
+				"(b) you already tried to send the file via your normal communication tools (e.g. WhatsApp, "+
+				"email, file transfer) and it failed. Direct delivery via communication tools always takes "+
+				"priority. The link is single-use and expires after a configurable TTL (default 15 minutes). "+
+				"The fileserver must be enabled in config.yaml (fileserver_port) for this tool to be available.",
+		),
+		mcp.WithString("email_id",
+			mcp.Required(),
+			mcp.Description("The email ID in the format 'account:folder:uid' as returned by search_emails or get_recent_activity."),
+		),
+		mcp.WithString("output_dir",
+			mcp.Description("Override the default attachment directory. If omitted, uses attachment_dir from config.yaml."),
+		),
+	)
+}
+
+func handleGetDownloadLink(cfg *config.Config, fs *fileserver.Server) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		emailID, err := req.RequireString("email_id")
+		if err != nil {
+			return mcp.NewToolResultError("email_id is required"), nil
+		}
+
+		lastColon := strings.LastIndex(emailID, ":")
+		if lastColon < 0 {
+			return mcp.NewToolResultError(fmt.Sprintf("invalid email_id format (expected account:folder:uid): %q", emailID)), nil
+		}
+		uidStr := emailID[lastColon+1:]
+		remainder := emailID[:lastColon]
+		secondColon := strings.Index(remainder, ":")
+		if secondColon < 0 {
+			return mcp.NewToolResultError(fmt.Sprintf("invalid email_id format (expected account:folder:uid): %q", emailID)), nil
+		}
+		accountID := remainder[:secondColon]
+		folder := remainder[secondColon+1:]
+
+		var uid uint32
+		if _, err := fmt.Sscanf(uidStr, "%d", &uid); err != nil || uid == 0 {
+			return mcp.NewToolResultError(fmt.Sprintf("invalid uid in email_id: %q", uidStr)), nil
+		}
+
+		outDir := req.GetString("output_dir", cfg.AttachmentDir)
+
+		files, err := attachment.DownloadForEmail(cfg, accountID, folder, uid, outDir)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("download failed: %v", err)), nil
+		}
+		if len(files) == 0 {
+			return mcp.NewToolResultText("no attachments found for this email"), nil
+		}
+
+		type linkResult struct {
+			File string `json:"file"`
+			URL  string `json:"url"`
+		}
+		var results []linkResult
+		for _, f := range files {
+			url, err := fs.CreateLink(f.Path)
+			if err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("could not create download link for %q: %v", f.Path, err)), nil
+			}
+			results = append(results, linkResult{File: f.Path, URL: url})
+		}
+
+		out, _ := json.MarshalIndent(results, "", "  ")
 		return mcp.NewToolResultText(string(out)), nil
 	}
 }
