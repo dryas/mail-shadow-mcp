@@ -69,13 +69,25 @@ database:
 
 attachment_dir: "data/attachments"
 
+# Optional: lightweight HTTP server for temporary attachment download links.
+# Only enable this if you need the get_download_link MCP tool (e.g. as a
+# fallback when the AI agent cannot transfer files via its normal channels).
+fileserver_port: 8787               # TCP port to listen on (disabled if omitted)
+fileserver_ttl_min: 15              # minutes before a link expires (default: 15)
+fileserver_host: "localhost"        # hostname/IP shown in generated URLs
+
 accounts:
   - id: "work@example.com"
     host: "imap.example.com"
     port: 993
     username: "work@example.com"
     password: "$WORK_IMAP_PASS"   # or plain text
-    folders: ["INBOX", "Archive"] # omit to sync all folders
+    folders: ["INBOX", "Archive"] # only sync the mentioned folders
+  - id: "private@example.com"
+    host: "imap.example.com"
+    port: 993
+    username: "private@example.com"
+    password: "$PRIVATE_IMAP_PASS"   # or plain text
 ```
 
 Credentials can be stored as plain text or as `$ENV_VAR` references that are resolved at runtime.
