@@ -207,7 +207,10 @@ func decodeTransfer(data []byte, encoding string) ([]byte, error) {
 		return base64.StdEncoding.DecodeString(clean)
 	case "quoted-printable":
 		r := quotedprintable.NewReader(strings.NewReader(string(data)))
-		out, _ := io.ReadAll(r)
+		out, err := io.ReadAll(r)
+		if err != nil {
+			return nil, fmt.Errorf("quoted-printable decode: %w", err)
+		}
 		return out, nil
 	default:
 		// "7bit", "8bit", "binary" — no transform needed.

@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -127,6 +128,16 @@ func Migrate(db *sql.DB) error {
 	for _, stmt := range statements {
 		if _, err := db.Exec(stmt); err != nil {
 			return fmt.Errorf("db: migration failed: %w\nstatement: %s", err, stmt)
+		}
+	}
+
+	// Column additions — idempotent: ignore "duplicate column name" errors from SQLite.
+	columnMigrations := []string{
+		`ALTER TABLE sync_state ADD COLUMN uid_validity INTEGER NOT NULL DEFAULT 0`,
+	}
+	for _, stmt := range columnMigrations {
+		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("db: column migration failed: %w\nstatement: %s", err, stmt)
 		}
 	}
 

@@ -64,6 +64,12 @@ func cmdServe(args []string) {
 		os.Exit(1)
 	}
 
+	// Ensure attachment directory exists before the first download attempt.
+	if err := os.MkdirAll(cfg.AttachmentDir, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "mail-shadow-mcp: create attachment_dir: %v\n", err)
+		os.Exit(1)
+	}
+
 	syncInterval := 5 * time.Minute
 	if cfg.SyncIntervalMin > 0 {
 		syncInterval = time.Duration(cfg.SyncIntervalMin) * time.Minute

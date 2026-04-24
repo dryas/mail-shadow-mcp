@@ -65,6 +65,8 @@ func Load(path string) (*Config, error) {
 	// Apply defaults
 	if cfg.SyncIntervalMin <= 0 {
 		cfg.SyncIntervalMin = 15
+	} else if cfg.SyncIntervalMin < 5 {
+		cfg.SyncIntervalMin = 5
 	}
 
 	// Apply attachment dir default

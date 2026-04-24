@@ -128,6 +128,31 @@ func (c *Client) SyncFolder(db *sql.DB, folder string) error {
 	if err != nil {
 		return fmt.Errorf("sync: select folder %q: %w", folder, err)
 	}
+
+	// UIDValidity check — if the server reassigned UIDs, purge and re-sync.
+	if uint32(selData.UIDValidity) > 0 {
+		storedValidity, err := getStoredUIDValidity(db, c.cfg.ID, folder)
+		if err != nil {
+			return fmt.Errorf("sync: get uid_validity: %w", err)
+		}
+		if storedValidity > 0 && storedValidity != uint32(selData.UIDValidity) {
+			logger.Warn("UIDValidity changed — purging stale data and re-syncing",
+				"stored", storedValidity, "server", selData.UIDValidity)
+			if _, err := db.Exec(
+				`DELETE FROM mail_entries WHERE account_id = ? AND imap_folder = ?`,
+				c.cfg.ID, folder,
+			); err != nil {
+				return fmt.Errorf("sync: purge stale entries: %w", err)
+			}
+			if _, err := db.Exec(
+				`UPDATE sync_state SET last_uid = 0, uid_validity = ? WHERE account_id = ? AND imap_folder = ?`,
+				uint32(selData.UIDValidity), c.cfg.ID, folder,
+			); err != nil {
+				return fmt.Errorf("sync: reset sync_state: %w", err)
+			}
+			lastUID = 0
+		}
+	}
 	if selData.NumMessages == 0 {
 		logger.Debug("folder empty, skipping")
 		return nil
@@ -165,6 +190,7 @@ func (c *Client) SyncFolder(db *sql.DB, folder string) error {
 		}
 		buf, err := msg.Collect()
 		if err != nil {
+			logger.Warn("fetch error, aborting batch", "received_so_far", len(msgs), "err", err)
 			break
 		}
 		msgs = append(msgs, buf)
@@ -320,6 +346,17 @@ func (c *Client) SyncFolder(db *sql.DB, folder string) error {
 	}
 
 	logger.Info("sync complete, optimizing FTS index...", "new_messages", total, "max_uid", totalMaxUID)
+
+	// Persist UIDValidity so we can detect server-side mailbox rebuilds on next sync.
+	if uint32(selData.UIDValidity) > 0 {
+		if _, err := db.Exec(
+			`INSERT INTO sync_state (account_id, imap_folder, last_uid, uid_validity) VALUES (?, ?, 0, ?)
+			ON CONFLICT(account_id, imap_folder) DO UPDATE SET uid_validity = excluded.uid_validity`,
+			c.cfg.ID, folder, uint32(selData.UIDValidity),
+		); err != nil {
+			logger.Warn("could not persist uid_validity", "err", err)
+		}
+	}
 	if _, err := db.Exec(`INSERT INTO mail_content_fts(mail_content_fts) VALUES('optimize')`); err != nil {
 		logger.Warn("FTS optimize failed", "err", err)
 	}
@@ -392,6 +429,27 @@ func updateLastUID(tx *sql.Tx, accountID, folder string, uid uint32) error {
 		INSERT INTO sync_state (account_id, imap_folder, last_uid) VALUES (?, ?, ?)
 		ON CONFLICT(account_id, imap_folder) DO UPDATE SET last_uid = excluded.last_uid`,
 		accountID, folder, uid,
+	)
+	return err
+}
+
+func getStoredUIDValidity(db *sql.DB, accountID, folder string) (uint32, error) {
+	var v uint32
+	err := db.QueryRow(
+		`SELECT uid_validity FROM sync_state WHERE account_id = ? AND imap_folder = ?`,
+		accountID, folder,
+	).Scan(&v)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return v, err
+}
+
+func updateUIDValidity(tx *sql.Tx, accountID, folder string, validity uint32) error {
+	_, err := tx.Exec(`
+		INSERT INTO sync_state (account_id, imap_folder, last_uid, uid_validity) VALUES (?, ?, 0, ?)
+		ON CONFLICT(account_id, imap_folder) DO UPDATE SET uid_validity = excluded.uid_validity`,
+		accountID, folder, validity,
 	)
 	return err
 }

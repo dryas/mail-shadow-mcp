@@ -285,7 +285,9 @@ func handleGetEmailContent(db *sql.DB) server.ToolHandlerFunc {
 			defer attRows.Close()
 			for attRows.Next() {
 				var a attachmentDetail
-				attRows.Scan(&a.Filename, &a.ContentType, &a.SizeBytes)
+				if err := attRows.Scan(&a.Filename, &a.ContentType, &a.SizeBytes); err != nil {
+					continue
+				}
 				m.Attachments = append(m.Attachments, a)
 			}
 		}
