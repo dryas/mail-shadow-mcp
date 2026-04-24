@@ -153,6 +153,9 @@ func toolGetRecentActivity() mcp.Tool {
 		mcp.WithNumber("limit",
 			mcp.Description("Optional: maximum number of results. Defaults to 10. Max 100. Always set this explicitly when the user asks for a specific number."),
 		),
+		mcp.WithNumber("offset",
+			mcp.Description("Optional: number of results to skip for pagination. Use with limit to page through results. Defaults to 0."),
+		),
 		mcp.WithString("has_attachments",
 			mcp.Description(`Optional: filter by attachment presence. "true" = only emails with attachments, "false" = only without. Omit to include all.`),
 		),
@@ -179,9 +182,13 @@ func handleGetRecentActivity(db *sql.DB) server.ToolHandlerFunc {
 		account := req.GetString("account", "")
 		folder := req.GetString("folder", "")
 		limit := int(req.GetFloat("limit", 10))
+		offset := int(req.GetFloat("offset", 0))
 		hasAttachments := req.GetString("has_attachments", "")
 		if limit <= 0 || limit > 100 {
 			limit = 10
+		}
+		if offset < 0 {
+			offset = 0
 		}
 
 		qb := &queryBuilder{}
@@ -199,8 +206,8 @@ func handleGetRecentActivity(db *sql.DB) server.ToolHandlerFunc {
 		} else if hasAttachments == "false" {
 			qb.and("NOT EXISTS (SELECT 1 FROM mail_attachments WHERE entry_id = e.id)")
 		}
-		qb.write(` ORDER BY e.date_utc DESC NULLS LAST LIMIT ?`)
-		qb.args = append(qb.args, limit)
+		qb.write(` ORDER BY e.date_utc DESC NULLS LAST LIMIT ? OFFSET ?`)
+		qb.args = append(qb.args, limit, offset)
 
 		rows, err := db.QueryContext(ctx, qb.sql(), qb.args...)
 		if err != nil {
@@ -349,6 +356,9 @@ func toolSearchEmails() mcp.Tool {
 		mcp.WithNumber("limit",
 			mcp.Description("Optional: maximum number of results. Defaults to 10. Max 100. Always set this explicitly when the user asks for a specific number."),
 		),
+		mcp.WithNumber("offset",
+			mcp.Description("Optional: number of results to skip for pagination. Use with limit to page through results. Defaults to 0."),
+		),
 		mcp.WithBoolean("include_body",
 			mcp.Description("If true, include the plain-text body of each email in the results."),
 		),
@@ -369,10 +379,14 @@ func handleSearchEmails(db *sql.DB) server.ToolHandlerFunc {
 		dateTo := req.GetString("date_to", "")
 		folder := req.GetString("folder", "")
 		limit := int(req.GetFloat("limit", 10))
+		offset := int(req.GetFloat("offset", 0))
 		includeBody := req.GetBool("include_body", false)
 		hasAttachments := req.GetString("has_attachments", "")
 		if limit <= 0 || limit > 100 {
 			limit = 10
+		}
+		if offset < 0 {
+			offset = 0
 		}
 
 		bodyExpr := `''`
@@ -419,8 +433,8 @@ func handleSearchEmails(db *sql.DB) server.ToolHandlerFunc {
 			qb.and("NOT EXISTS (SELECT 1 FROM mail_attachments WHERE entry_id = e.id)")
 		}
 
-		qb.write(` ORDER BY e.date_utc DESC NULLS LAST LIMIT ?`)
-		qb.args = append(qb.args, limit)
+		qb.write(` ORDER BY e.date_utc DESC NULLS LAST LIMIT ? OFFSET ?`)
+		qb.args = append(qb.args, limit, offset)
 
 		rows, err := db.QueryContext(ctx, qb.sql(), qb.args...)
 		if err != nil {

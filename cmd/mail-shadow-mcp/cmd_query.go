@@ -33,6 +33,7 @@ func cmdQuery(args []string) {
 	dateFrom := fs.String("from", "", "filter from date (YYYY-MM-DD)")
 	dateTo := fs.String("to", "", "filter to date (YYYY-MM-DD)")
 	limit := fs.Int("limit", 20, "max results")
+	offset := fs.Int("offset", 0, "number of results to skip (for pagination)")
 	recent := fs.Bool("recent", false, "show most recent emails instead of searching")
 	body := fs.Bool("body", false, "include body text in results")
 	attachments := fs.String("attachments", "", `filter by attachment presence: "only" = with attachments, "none" = without`)
@@ -67,7 +68,7 @@ Flags:
 	}
 
 	if *recent {
-		queryShowRecent(database, *account, *folder, *limit, *body, *attachments)
+		queryShowRecent(database, *account, *folder, *limit, *offset, *body, *attachments)
 		return
 	}
 
@@ -77,7 +78,7 @@ Flags:
 		os.Exit(1)
 	}
 
-	querySearch(database, *query, *subject, *sender, *recipient, *account, *folder, *dateFrom, *dateTo, *limit, *body, *attachments)
+	querySearch(database, *query, *subject, *sender, *recipient, *account, *folder, *dateFrom, *dateTo, *limit, *offset, *body, *attachments)
 }
 
 type queryAttachment struct {
@@ -97,7 +98,7 @@ type queryResult struct {
 	Attachments []queryAttachment `json:"attachments"`
 }
 
-func queryShowRecent(database *sql.DB, account, folder string, limit int, withBody bool, attachments string) {
+func queryShowRecent(database *sql.DB, account, folder string, limit, offset int, withBody bool, attachments string) {
 	q := buildSelectSQL(withBody) + ` WHERE 1=1`
 	var queryArgs []any
 	if account != "" {
@@ -113,8 +114,8 @@ func queryShowRecent(database *sql.DB, account, folder string, limit int, withBo
 	} else if attachments == "none" {
 		q += " AND NOT EXISTS (SELECT 1 FROM mail_attachments WHERE entry_id = e.id)"
 	}
-	q += " ORDER BY e.date_utc DESC LIMIT ?"
-	queryArgs = append(queryArgs, limit)
+	q += " ORDER BY e.date_utc DESC LIMIT ? OFFSET ?"
+	queryArgs = append(queryArgs, limit, offset)
 	queryPrintResults(database, q, queryArgs)
 }
 
@@ -133,7 +134,7 @@ func buildSelectSQL(withBody bool) string {
 		FROM mail_entries e`
 }
 
-func querySearch(database *sql.DB, query, subject, sender, recipient, account, folder, dateFrom, dateTo string, limit int, withBody bool, attachments string) {
+func querySearch(database *sql.DB, query, subject, sender, recipient, account, folder, dateFrom, dateTo string, limit, offset int, withBody bool, attachments string) {
 	var conditions []string
 	var queryArgs []any
 
@@ -181,8 +182,8 @@ func querySearch(database *sql.DB, query, subject, sender, recipient, account, f
 	}
 
 	base := buildSelectSQL(withBody)
-	q := fmt.Sprintf(`%s %s ORDER BY e.date_utc DESC LIMIT ?`, base, where)
-	queryArgs = append(queryArgs, limit)
+	q := fmt.Sprintf(`%s %s ORDER BY e.date_utc DESC LIMIT ? OFFSET ?`, base, where)
+	queryArgs = append(queryArgs, limit, offset)
 	queryPrintResults(database, q, queryArgs)
 }
 
