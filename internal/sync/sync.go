@@ -445,15 +445,6 @@ func getStoredUIDValidity(db *sql.DB, accountID, folder string) (uint32, error) 
 	return v, err
 }
 
-func updateUIDValidity(tx *sql.Tx, accountID, folder string, validity uint32) error {
-	_, err := tx.Exec(`
-		INSERT INTO sync_state (account_id, imap_folder, last_uid, uid_validity) VALUES (?, ?, 0, ?)
-		ON CONFLICT(account_id, imap_folder) DO UPDATE SET uid_validity = excluded.uid_validity`,
-		accountID, folder, validity,
-	)
-	return err
-}
-
 // formatAddresses joins a list of IMAP addresses as "Name <addr>" comma-separated strings.
 func formatAddresses(addrs []imap.Address) string {
 	parts := make([]string, 0, len(addrs))
@@ -592,24 +583,4 @@ func decodeBody(b []byte, encoding string) string {
 		}
 	}
 	return string(b)
-}
-
-// insertFTS inserts a full-text search record for a message.
-// Using DELETE + INSERT to ensure idempotency, since FTS5 virtual tables
-// do not support UNIQUE constraints on non-rowid columns.
-func insertFTS(tx *sql.Tx, entryID, subject, bodyText string) error {
-	if _, err := tx.Exec(`DELETE FROM mail_content_fts WHERE entry_id = ?`, entryID); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(
-		`INSERT INTO mail_content_fts (entry_id, subject, body_text) VALUES (?, ?, ?)`,
-		entryID, subject, bodyText,
-	); err != nil {
-		return err
-	}
-	_, err := tx.Exec(
-		`INSERT OR REPLACE INTO mail_content (entry_id, body_text) VALUES (?, ?)`,
-		entryID, bodyText,
-	)
-	return err
 }

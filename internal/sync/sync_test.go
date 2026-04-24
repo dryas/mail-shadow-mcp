@@ -217,8 +217,6 @@ func TestExtractBodyText_Missing(t *testing.T) {
 func TestInsertFTS_AndSearch(t *testing.T) {
 	database := openTestDB(t)
 
-	// Insert a dummy mail_entries row first (FK is not enforced for FTS virtual table,
-	// but we insert one to keep things realistic).
 	_, err := database.Exec(
 		`INSERT INTO mail_entries (id, account_id, imap_uid, imap_folder, subject, sender, recipients_to, recipients_cc) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		"acc:INBOX:1", "acc", 1, "INBOX", "Test Subject", "", "", "",
@@ -231,8 +229,12 @@ func TestInsertFTS_AndSearch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
-	if err := insertFTS(tx, "acc:INBOX:1", "Test Subject", "unique_token_xyz"); err != nil {
-		t.Fatalf("insertFTS: %v", err)
+	if _, err := tx.Exec(`DELETE FROM mail_content_fts WHERE entry_id = ?`, "acc:INBOX:1"); err != nil {
+		t.Fatalf("delete fts: %v", err)
+	}
+	if _, err := tx.Exec(`INSERT INTO mail_content_fts (entry_id, subject, body_text) VALUES (?, ?, ?)`,
+		"acc:INBOX:1", "Test Subject", "unique_token_xyz"); err != nil {
+		t.Fatalf("insert fts: %v", err)
 	}
 	if err := tx.Commit(); err != nil {
 		t.Fatalf("Commit: %v", err)
@@ -251,10 +253,12 @@ func TestInsertFTS_AndSearch(t *testing.T) {
 func TestInsertFTS_Idempotent(t *testing.T) {
 	database := openTestDB(t)
 
-	tx, _ := database.Begin()
-	_ = insertFTS(tx, "acc:INBOX:2", "Subject", "body")
-	_ = insertFTS(tx, "acc:INBOX:2", "Subject", "body") // duplicate → OR IGNORE
-	_ = tx.Commit()
+	for i := 0; i < 2; i++ {
+		tx, _ := database.Begin()
+		tx.Exec(`DELETE FROM mail_content_fts WHERE entry_id = ?`, "acc:INBOX:2")
+		tx.Exec(`INSERT INTO mail_content_fts (entry_id, subject, body_text) VALUES (?, ?, ?)`, "acc:INBOX:2", "Subject", "body")
+		tx.Commit()
+	}
 
 	var count int
 	database.QueryRow(`SELECT count(*) FROM mail_content_fts`).Scan(&count)
