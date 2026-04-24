@@ -40,13 +40,16 @@ jobs:
           GOOS=darwin  GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/mail-shadow-mcp-darwin-amd64     ./cmd/mail-shadow-mcp
           GOOS=darwin  GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o dist/mail-shadow-mcp-darwin-arm64     ./cmd/mail-shadow-mcp
 
-          # Create compressed archives
+          # Bundle config.example.yaml alongside each binary
           cd dist
+          cp ../config.example.yaml .
+
+          # Create compressed archives
           for f in mail-shadow-mcp-linux-* mail-shadow-mcp-darwin-*; do
-            tar czf "${f}.tar.gz" "${f}" && rm "${f}"
+            tar czf "${f}.tar.gz" "${f}" config.example.yaml && rm "${f}"
           done
           for f in mail-shadow-mcp-windows-*.exe; do
-            zip "${f%.exe}.zip" "${f}" && rm "${f}"
+            zip "${f%.exe}.zip" "${f}" config.example.yaml && rm "${f}"
           done
 
       - name: Create GitHub Release
