@@ -33,6 +33,7 @@ type Config struct {
 	FileServerHost  string          `yaml:"fileserver_host"`    // externally reachable hostname/IP (default: localhost)
 	LogFile         string          `yaml:"log_file"`           // optional: path to log file; omit to log to stderr
 	LogLevel        string          `yaml:"log_level"`          // debug | info (default) | warn | error
+	LogFormat       string          `yaml:"log_format"`         // text (default) | json
 	Accounts        []AccountConfig `yaml:"accounts"`
 }
 

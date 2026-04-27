@@ -169,6 +169,13 @@ func setupLogging(cfg *config.Config) error {
 		level = slog.LevelInfo
 	}
 
-	slog.SetDefault(slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: level})))
+	opts := &slog.HandlerOptions{Level: level}
+	var h slog.Handler
+	if cfg.LogFormat == "json" {
+		h = slog.NewJSONHandler(w, opts)
+	} else {
+		h = slog.NewTextHandler(w, opts)
+	}
+	slog.SetDefault(slog.New(h))
 	return nil
 }
