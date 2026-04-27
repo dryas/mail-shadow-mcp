@@ -81,6 +81,14 @@ func validateHasAttachments(value string) string {
 	return fmt.Sprintf("invalid has_attachments %q: must be \"true\", \"false\", or omitted", value)
 }
 
+func validateIsRead(value string) string {
+	switch value {
+	case "", "true", "false":
+		return ""
+	}
+	return fmt.Sprintf("invalid is_read %q: must be \"true\", \"false\", or omitted", value)
+}
+
 // fmtDBError formats a database error, providing extra guidance for FTS5 syntax errors.
 func fmtDBError(err error) string {
 	s := err.Error()
@@ -257,8 +265,8 @@ func handleGetRecentActivity(db *sql.DB) server.ToolHandlerFunc {
 		if msg := validateHasAttachments(hasAttachments); msg != "" {
 			return mcp.NewToolResultError(msg), nil
 		}
-		if msg := validateHasAttachments(isRead); msg != "" {
-			return mcp.NewToolResultError("is_read: " + msg), nil
+		if msg := validateIsRead(isRead); msg != "" {
+			return mcp.NewToolResultError(msg), nil
 		}
 		if limit <= 0 || limit > 100 {
 			limit = 10
@@ -325,7 +333,8 @@ func handleGetRecentActivity(db *sql.DB) server.ToolHandlerFunc {
 		}
 
 		var total int
-		if err := db.QueryRowContext(ctx, qb.toCountQuery().sql(), qb.toCountQuery().args...).Scan(&total); err != nil {
+		countQB := qb.toCountQuery()
+		if err := db.QueryRowContext(ctx, countQB.sql(), countQB.args...).Scan(&total); err != nil {
 			slog.Warn("get_recent_activity: count query failed", "err", err)
 		}
 		if results == nil {
@@ -377,15 +386,16 @@ func handleGetEmailContent(db *sql.DB) server.ToolHandlerFunc {
 
 		var m mailDetail
 		var rawDate sql.NullTime
+		var rawIsRead, rawIsReplied sql.NullInt64
 		err = db.QueryRowContext(ctx, `
 			SELECT e.id, e.account_id, e.imap_folder, e.subject, e.sender,
-			       e.recipients_to, e.recipients_cc, e.date_utc,
+			       e.recipients_to, e.recipients_cc, e.date_utc, e.is_read, e.is_replied,
 			       COALESCE((SELECT body_text FROM mail_content WHERE entry_id = e.id), '')
 			FROM mail_entries e
 			WHERE e.id = ?`, entryID,
 		).Scan(
 			&m.ID, &m.AccountID, &m.Folder, &m.Subject, &m.Sender,
-			&m.RecipientsTo, &m.RecipientsCC, &rawDate,
+			&m.RecipientsTo, &m.RecipientsCC, &rawDate, &rawIsRead, &rawIsReplied,
 			&m.BodyText,
 		)
 		if err == sql.ErrNoRows {
@@ -397,6 +407,14 @@ func handleGetEmailContent(db *sql.DB) server.ToolHandlerFunc {
 		if rawDate.Valid {
 			s := rawDate.Time.UTC().Format(time.RFC3339)
 			m.DateUTC = &s
+		}
+		if rawIsRead.Valid {
+			v := rawIsRead.Int64 != 0
+			m.IsRead = &v
+		}
+		if rawIsReplied.Valid {
+			v := rawIsReplied.Int64 != 0
+			m.IsReplied = &v
 		}
 
 		// Truncate very large bodies to avoid flooding the agent context window.
@@ -582,8 +600,8 @@ func handleSearchEmails(db *sql.DB) server.ToolHandlerFunc {
 		if msg := validateHasAttachments(p.hasAttachments); msg != "" {
 			return mcp.NewToolResultError(msg), nil
 		}
-		if msg := validateHasAttachments(p.isRead); msg != "" {
-			return mcp.NewToolResultError("is_read: " + msg), nil
+		if msg := validateIsRead(p.isRead); msg != "" {
+			return mcp.NewToolResultError(msg), nil
 		}
 		if msg := validateDate("date_from", p.dateFrom); msg != "" {
 			return mcp.NewToolResultError(msg), nil
@@ -633,7 +651,8 @@ func handleSearchEmails(db *sql.DB) server.ToolHandlerFunc {
 		}
 
 		var total int
-		if err := db.QueryRowContext(ctx, qb.toCountQuery().sql(), qb.toCountQuery().args...).Scan(&total); err != nil {
+		countQB := qb.toCountQuery()
+		if err := db.QueryRowContext(ctx, countQB.sql(), countQB.args...).Scan(&total); err != nil {
 			slog.Warn("search_emails: count query failed", "err", err)
 		}
 		if results == nil {
