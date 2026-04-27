@@ -471,6 +471,9 @@ func toolSearchEmails() mcp.Tool {
 		mcp.WithString("is_read",
 			mcp.Description(`Optional: filter by read status. "true" = only read emails, "false" = only unread. Omit to include all.`),
 		),
+		mcp.WithString("sent_by",
+			mcp.Description("Filter by sending account ID (exact match). Use this instead of 'sender' when searching the Sent folder to find mail sent from a specific account."),
+		),
 	)
 }
 
@@ -478,7 +481,7 @@ func toolSearchEmails() mcp.Tool {
 type searchParams struct {
 	query, account, subject, sender, recipient string
 	dateFrom, dateTo, folder, hasAttachments   string
-	isRead                                     string
+	isRead, sentBy                             string
 	limit, offset                              int
 	includeBody                                bool
 }
@@ -498,6 +501,7 @@ func parseSearchParams(req mcp.CallToolRequest) searchParams {
 		includeBody:    req.GetBool("include_body", false),
 		hasAttachments: req.GetString("has_attachments", ""),
 		isRead:         req.GetString("is_read", ""),
+		sentBy:         req.GetString("sent_by", ""),
 	}
 	if p.limit <= 0 || p.limit > 100 {
 		p.limit = 10
@@ -545,6 +549,9 @@ func buildSearchQuery(p searchParams) *queryBuilder {
 	}
 	if p.folder != "" {
 		qb.and("e.imap_folder = ?", p.folder)
+	}
+	if p.sentBy != "" {
+		qb.and("e.account_id = ?", p.sentBy)
 	}
 	applyAttachmentFilter(qb, p.hasAttachments)
 	if p.isRead == "true" {
