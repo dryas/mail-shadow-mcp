@@ -31,6 +31,8 @@ type Config struct {
 	FileServerPort  int             `yaml:"fileserver_port"`    // 0 = disabled; set to e.g. 8787 to enable
 	FileServerTTL   int             `yaml:"fileserver_ttl_min"` // minutes before a download link expires (default 15)
 	FileServerHost  string          `yaml:"fileserver_host"`    // externally reachable hostname/IP (default: localhost)
+	LogFile         string          `yaml:"log_file"`           // optional: path to log file; omit to log to stderr
+	LogLevel        string          `yaml:"log_level"`          // debug | info (default) | warn | error
 	Accounts        []AccountConfig `yaml:"accounts"`
 }
 

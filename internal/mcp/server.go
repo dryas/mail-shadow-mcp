@@ -22,6 +22,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -53,6 +54,39 @@ func New(db *sql.DB, cfg *config.Config, version string, fs *fileserver.Server) 
 	}
 
 	return s
+}
+
+// ---------------------------------------------------------------------------
+// validateDate checks that a date string is parseable as RFC3339 or YYYY-MM-DD.
+// Returns a human-readable error string, or "" if valid or empty.
+func validateDate(param, value string) string {
+	if value == "" {
+		return ""
+	}
+	for _, layout := range []string{time.RFC3339, "2006-01-02"} {
+		if _, err := time.Parse(layout, value); err == nil {
+			return ""
+		}
+	}
+	return fmt.Sprintf("invalid %s %q: use RFC3339 (e.g. 2024-01-15T00:00:00Z) or YYYY-MM-DD (e.g. 2024-01-15)", param, value)
+}
+
+// validateHasAttachments checks that has_attachments is "", "true", or "false".
+func validateHasAttachments(value string) string {
+	switch value {
+	case "", "true", "false":
+		return ""
+	}
+	return fmt.Sprintf("invalid has_attachments %q: must be \"true\", \"false\", or omitted", value)
+}
+
+// fmtDBError formats a database error, providing extra guidance for FTS5 syntax errors.
+func fmtDBError(err error) string {
+	s := err.Error()
+	if strings.Contains(s, "fts5") || strings.Contains(s, "syntax error") {
+		return fmt.Sprintf("invalid search query syntax (%v). Use simple keywords or quoted phrases (e.g. \"invoice april\"). Avoid special characters like +, -, *, ( ) unless you know FTS5 syntax.", err)
+	}
+	return fmt.Sprintf("db error: %v", err)
 }
 
 // ---------------------------------------------------------------------------
@@ -100,6 +134,7 @@ type accountInfo struct {
 
 func handleListAccountsAndFolders(db *sql.DB, cfg *config.Config) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		slog.Info("tool called", "tool", "list_accounts_and_folders")
 		rows, err := db.QueryContext(ctx,
 			`SELECT account_id, imap_folder, last_uid FROM sync_state ORDER BY account_id, imap_folder`)
 		if err != nil {
@@ -184,6 +219,10 @@ func handleGetRecentActivity(db *sql.DB) server.ToolHandlerFunc {
 		limit := int(req.GetFloat("limit", 10))
 		offset := int(req.GetFloat("offset", 0))
 		hasAttachments := req.GetString("has_attachments", "")
+		slog.Info("tool called", "tool", "get_recent_activity", "account", account, "folder", folder, "limit", limit, "offset", offset, "has_attachments", hasAttachments)
+		if msg := validateHasAttachments(hasAttachments); msg != "" {
+			return mcp.NewToolResultError(msg), nil
+		}
 		if limit <= 0 || limit > 100 {
 			limit = 10
 		}
@@ -211,7 +250,7 @@ func handleGetRecentActivity(db *sql.DB) server.ToolHandlerFunc {
 
 		rows, err := db.QueryContext(ctx, qb.sql(), qb.args...)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("db error: %v", err)), nil
+			return mcp.NewToolResultError(fmtDBError(err)), nil
 		}
 		defer rows.Close()
 
@@ -221,6 +260,7 @@ func handleGetRecentActivity(db *sql.DB) server.ToolHandlerFunc {
 			var rawDate sql.NullTime
 			var attJSON string
 			if err := rows.Scan(&m.ID, &m.AccountID, &m.Folder, &m.Subject, &m.Sender, &m.RecipientsTo, &rawDate, &attJSON); err != nil {
+				slog.Warn("get_recent_activity: row scan failed", "err", err)
 				continue
 			}
 			if rawDate.Valid {
@@ -270,6 +310,7 @@ func handleGetEmailContent(db *sql.DB) server.ToolHandlerFunc {
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
+		slog.Info("tool called", "tool", "get_email_content", "entry_id", entryID)
 
 		var m mailDetail
 		var rawDate sql.NullTime
@@ -285,10 +326,10 @@ func handleGetEmailContent(db *sql.DB) server.ToolHandlerFunc {
 			&m.BodyText,
 		)
 		if err == sql.ErrNoRows {
-			return mcp.NewToolResultError(fmt.Sprintf("entry not found: %s", entryID)), nil
+			return mcp.NewToolResultError(fmt.Sprintf("entry not found: %q — use list_accounts_and_folders and get_recent_activity to find valid IDs", entryID)), nil
 		}
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("db error: %v", err)), nil
+			return mcp.NewToolResultError(fmtDBError(err)), nil
 		}
 		if rawDate.Valid {
 			s := rawDate.Time.UTC().Format(time.RFC3339)
@@ -457,11 +498,21 @@ func applyAttachmentFilter(qb *queryBuilder, hasAttachments string) {
 func handleSearchEmails(db *sql.DB) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		p := parseSearchParams(req)
+		slog.Info("tool called", "tool", "search_emails", "query", p.query, "account", p.account, "sender", p.sender, "date_from", p.dateFrom, "date_to", p.dateTo, "limit", p.limit, "offset", p.offset)
+		if msg := validateHasAttachments(p.hasAttachments); msg != "" {
+			return mcp.NewToolResultError(msg), nil
+		}
+		if msg := validateDate("date_from", p.dateFrom); msg != "" {
+			return mcp.NewToolResultError(msg), nil
+		}
+		if msg := validateDate("date_to", p.dateTo); msg != "" {
+			return mcp.NewToolResultError(msg), nil
+		}
 		qb := buildSearchQuery(p)
 
 		rows, err := db.QueryContext(ctx, qb.sql(), qb.args...)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("db error: %v", err)), nil
+			return mcp.NewToolResultError(fmtDBError(err)), nil
 		}
 		defer rows.Close()
 
@@ -476,6 +527,7 @@ func handleSearchEmails(db *sql.DB) server.ToolHandlerFunc {
 			var rawDate sql.NullTime
 			var attJSON string
 			if err := rows.Scan(&m.ID, &m.AccountID, &m.Folder, &m.Subject, &m.Sender, &m.RecipientsTo, &rawDate, &attJSON, &m.BodyText); err != nil {
+				slog.Warn("search_emails: row scan failed", "err", err)
 				continue
 			}
 			if rawDate.Valid {
@@ -516,6 +568,7 @@ func handleDownloadAttachments(cfg *config.Config) server.ToolHandlerFunc {
 		if err != nil {
 			return mcp.NewToolResultError("email_id is required"), nil
 		}
+		slog.Info("tool called", "tool", "download_attachments", "email_id", emailID)
 
 		// Parse email_id: "account:folder:uid"
 		// Note: account and folder may themselves contain colons, so split from right.
@@ -582,6 +635,7 @@ func handleGetDownloadLink(cfg *config.Config, fs *fileserver.Server) server.Too
 		if err != nil {
 			return mcp.NewToolResultError("email_id is required"), nil
 		}
+		slog.Info("tool called", "tool", "get_download_link", "email_id", emailID)
 
 		lastColon := strings.LastIndex(emailID, ":")
 		if lastColon < 0 {

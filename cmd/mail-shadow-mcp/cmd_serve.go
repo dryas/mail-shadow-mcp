@@ -14,8 +14,10 @@ import (
 	"database/sql"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/mark3labs/mcp-go/server"
@@ -46,6 +48,11 @@ func cmdServe(args []string) {
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "mail-shadow-mcp: load config: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := setupLogging(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "mail-shadow-mcp: setup logging: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -129,4 +136,39 @@ func startFileServer(cfg *config.Config) *fileserver.Server {
 		os.Exit(1)
 	}
 	return srv
+}
+
+// setupLogging configures the global slog logger.
+// If cfg.LogFile is set the log output is written to that file (append mode);
+// otherwise it falls back to stderr. cfg.LogLevel controls the minimum level
+// (debug/info/warn/error); defaults to info.
+func setupLogging(cfg *config.Config) error {
+	var w io.Writer = os.Stderr
+	if cfg.LogFile != "" {
+		if err := os.MkdirAll(filepath.Dir(cfg.LogFile), 0o755); err != nil {
+			return fmt.Errorf("create log dir: %w", err)
+		}
+		f, err := os.OpenFile(cfg.LogFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			return fmt.Errorf("open log file %q: %w", cfg.LogFile, err)
+		}
+		// Write banner to stderr even when logging to file so the terminal
+		// gives immediate feedback.
+		w = f
+	}
+
+	var level slog.Level
+	switch cfg.LogLevel {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	default:
+		level = slog.LevelInfo
+	}
+
+	slog.SetDefault(slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: level})))
+	return nil
 }

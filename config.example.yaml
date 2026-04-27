@@ -5,6 +5,10 @@ database:
 
 attachment_dir: "data/attachments"  # base directory for downloaded attachments
 
+# Optional: log file and level. Omit log_file to write to stderr (default).
+# log_file: "logs/mail-shadow-mcp.log"  # append mode; directory is created automatically
+# log_level: info                        # debug | info (default) | warn | error
+
 # Optional: lightweight HTTP server for temporary attachment download links.
 # Only enable this if you need the get_download_link MCP tool (e.g. as a
 # fallback when the AI agent cannot transfer files via its normal channels).
