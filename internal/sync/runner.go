@@ -44,6 +44,15 @@ func RunAll(cfg *config.Config, db *sql.DB) []AccountResult {
 		wg.Add(1)
 		go func(idx int, accCfg config.AccountConfig) {
 			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("sync panic recovered", "account", accCfg.ID, "panic", r)
+					results[idx] = AccountResult{
+						AccountID: accCfg.ID,
+						Err:       fmt.Errorf("panic: %v", r),
+					}
+				}
+			}()
 
 			mu := accountMutex(accCfg.ID)
 			if !mu.TryLock() {
