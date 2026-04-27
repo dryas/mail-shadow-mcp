@@ -228,3 +228,50 @@ func TestHandleSearchEmails_LimitDefault(t *testing.T) {
 		t.Errorf("expected total_count 5, got %d", page.TotalCount)
 	}
 }
+
+func TestHandleGetThread_Basic(t *testing.T) {
+	database := openTestDB(t)
+	// Three mails forming a thread: root → reply → reply-to-reply
+	database.Exec(`INSERT INTO mail_entries
+		(id, account_id, imap_uid, imap_folder, subject, sender, recipients_to, recipients_cc, message_id, in_reply_to)
+		VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		"acc1:INBOX:1", "acc1", 1, "INBOX", "Root", "a@example.com", "b@example.com", "", "<root@example.com>", nil)
+	database.Exec(`INSERT INTO mail_entries
+		(id, account_id, imap_uid, imap_folder, subject, sender, recipients_to, recipients_cc, message_id, in_reply_to)
+		VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		"acc1:INBOX:2", "acc1", 2, "INBOX", "Re: Root", "b@example.com", "a@example.com", "", "<reply@example.com>", "<root@example.com>")
+	database.Exec(`INSERT INTO mail_entries
+		(id, account_id, imap_uid, imap_folder, subject, sender, recipients_to, recipients_cc, message_id, in_reply_to)
+		VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		"acc1:INBOX:3", "acc1", 3, "INBOX", "Re: Re: Root", "a@example.com", "b@example.com", "", "<reply2@example.com>", "<reply@example.com>")
+	// Unrelated mail that must NOT appear in the thread.
+	seedEntry(t, database, "acc1:INBOX:4", "acc1", "INBOX", "Unrelated", "c@example.com", 4)
+
+	h := handleGetThread(database)
+	out := callTool(t, h, map[string]any{"email_id": "acc1:INBOX:2"})
+
+	var results []mailSummary
+	if err := json.Unmarshal([]byte(out), &results); err != nil {
+		t.Fatalf("JSON parse: %v\nraw: %s", err, out)
+	}
+	if len(results) != 3 {
+		t.Errorf("expected 3 thread members, got %d: %+v", len(results), results)
+	}
+	// Unrelated mail must not be included.
+	for _, r := range results {
+		if r.ID == "acc1:INBOX:4" {
+			t.Errorf("unrelated mail appeared in thread")
+		}
+	}
+}
+
+func TestHandleGetThread_NotFound(t *testing.T) {
+	database := openTestDB(t)
+	h := handleGetThread(database)
+	out := callTool(t, h, map[string]any{"email_id": "acc1:INBOX:99"})
+	var results []mailSummary
+	json.Unmarshal([]byte(out), &results)
+	if len(results) != 0 {
+		t.Errorf("expected empty result for unknown email_id, got %d", len(results))
+	}
+}

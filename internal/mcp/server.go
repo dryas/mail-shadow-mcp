@@ -48,6 +48,7 @@ func New(db *sql.DB, cfg *config.Config, version string, fs *fileserver.Server) 
 	s.AddTool(toolGetRecentActivity(), handleGetRecentActivity(db))
 	s.AddTool(toolGetEmailContent(), handleGetEmailContent(db))
 	s.AddTool(toolSearchEmails(), handleSearchEmails(db))
+	s.AddTool(toolGetThread(), handleGetThread(db))
 	s.AddTool(toolDownloadAttachments(), handleDownloadAttachments(cfg))
 	if fs != nil {
 		s.AddTool(toolGetDownloadLink(), handleGetDownloadLink(cfg, fs))
@@ -781,6 +782,89 @@ func handleGetDownloadLink(cfg *config.Config, fs *fileserver.Server) server.Too
 			results = append(results, linkResult{File: f.Path, URL: url})
 		}
 
+		out, _ := json.MarshalIndent(results, "", "  ")
+		return mcp.NewToolResultText(string(out)), nil
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tool: get_thread
+// ---------------------------------------------------------------------------
+
+func toolGetThread() mcp.Tool {
+	return mcp.NewTool("get_thread",
+		mcp.WithDescription("Returns all emails belonging to the same thread as the given email, sorted by date ascending. Uses message-id and in-reply-to headers to find related messages. Note: emails synced before this feature was added may have NULL thread headers and will not appear in thread results until the background envelope backfill completes."),
+		mcp.WithString("email_id",
+			mcp.Required(),
+			mcp.Description("The email ID in the format 'account:folder:uid' as returned by search_emails or get_recent_activity."),
+		),
+	)
+}
+
+func handleGetThread(db *sql.DB) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		emailID, err := req.RequireString("email_id")
+		if err != nil {
+			return mcp.NewToolResultError("email_id is required"), nil
+		}
+		slog.Info("tool called", "tool", "get_thread", "email_id", emailID)
+
+		// Recursive CTE: start from the given email and walk the thread
+		// both forward (replies to this mail) and backward (what this mail replies to).
+		const query = `
+			WITH RECURSIVE thread(id, message_id, in_reply_to) AS (
+				SELECT id, message_id, in_reply_to
+				FROM mail_entries WHERE id = ?
+				UNION
+				SELECT e.id, e.message_id, e.in_reply_to
+				FROM mail_entries e
+				JOIN thread t ON
+					(e.in_reply_to IS NOT NULL AND e.in_reply_to = t.message_id)
+					OR (e.message_id IS NOT NULL AND e.message_id = t.in_reply_to)
+			)
+			SELECT DISTINCT e.id, e.account_id, e.imap_folder, e.subject, e.sender,
+				e.recipients_to, e.date_utc, e.is_read, e.is_replied, ` +
+			fetchAttachmentsSubquery + `
+			FROM mail_entries e
+			JOIN thread t ON e.id = t.id
+			ORDER BY e.date_utc ASC NULLS LAST`
+
+		rows, err := db.QueryContext(ctx, query, emailID)
+		if err != nil {
+			return mcp.NewToolResultError(fmtDBError(err)), nil
+		}
+		defer rows.Close()
+
+		var results []mailSummary
+		for rows.Next() {
+			var m mailSummary
+			var rawDate sql.NullTime
+			var rawIsRead, rawIsReplied sql.NullInt64
+			var attJSON string
+			if err := rows.Scan(&m.ID, &m.AccountID, &m.Folder, &m.Subject, &m.Sender, &m.RecipientsTo, &rawDate, &rawIsRead, &rawIsReplied, &attJSON); err != nil {
+				slog.Warn("get_thread: row scan failed", "err", err)
+				continue
+			}
+			if rawDate.Valid {
+				s := rawDate.Time.UTC().Format(time.RFC3339)
+				m.DateUTC = &s
+			}
+			if rawIsRead.Valid {
+				v := rawIsRead.Int64 != 0
+				m.IsRead = &v
+			}
+			if rawIsReplied.Valid {
+				v := rawIsReplied.Int64 != 0
+				m.IsReplied = &v
+			}
+			if err := json.Unmarshal([]byte(attJSON), &m.Attachments); err != nil {
+				m.Attachments = []attachmentDetail{}
+			}
+			results = append(results, m)
+		}
+		if results == nil {
+			results = []mailSummary{}
+		}
 		out, _ := json.MarshalIndent(results, "", "  ")
 		return mcp.NewToolResultText(string(out)), nil
 	}

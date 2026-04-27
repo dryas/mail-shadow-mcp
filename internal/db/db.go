@@ -18,6 +18,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -132,15 +133,33 @@ func Migrate(db *sql.DB) error {
 	}
 
 	// Column additions — idempotent: ignore "duplicate column name" errors from SQLite.
+	// Each applied migration is logged so operators can see what ran on startup.
 	columnMigrations := []string{
 		`ALTER TABLE sync_state ADD COLUMN uid_validity INTEGER NOT NULL DEFAULT 0`,
 		// Nullable: NULL means "flags not yet fetched" (pre-migration rows or backfill pending).
 		`ALTER TABLE mail_entries ADD COLUMN is_read    INTEGER`,
 		`ALTER TABLE mail_entries ADD COLUMN is_replied INTEGER`,
+		// Nullable: NULL means "envelope not yet backfilled" (pre-R6 rows).
+		`ALTER TABLE mail_entries ADD COLUMN message_id  TEXT`,
+		`ALTER TABLE mail_entries ADD COLUMN in_reply_to TEXT`,
 	}
 	for _, stmt := range columnMigrations {
-		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		if _, err := db.Exec(stmt); err != nil {
+			if strings.Contains(err.Error(), "duplicate column name") {
+				continue
+			}
 			return fmt.Errorf("db: column migration failed: %w\nstatement: %s", err, stmt)
+		}
+		slog.Info("db: schema migration applied", "statement", stmt)
+	}
+
+	// Indexes that depend on columns added above — must run after columnMigrations.
+	for _, stmt := range []string{
+		`CREATE INDEX IF NOT EXISTS idx_mail_message_id  ON mail_entries(message_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_mail_in_reply_to ON mail_entries(in_reply_to)`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("db: index migration failed: %w", err)
 		}
 	}
 

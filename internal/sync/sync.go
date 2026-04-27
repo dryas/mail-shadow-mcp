@@ -178,6 +178,9 @@ func (c *Client) SyncFolder(db *sql.DB, folder string) error {
 	if err := c.backfillFlags(db, logger, folder); err != nil {
 		logger.Warn("flag backfill failed", "err", err)
 	}
+	if err := c.backfillEnvelope(db, logger, folder); err != nil {
+		logger.Warn("envelope backfill failed", "err", err)
+	}
 	logger.Info("sync complete", "new_messages", total, "max_uid", totalMaxUID)
 	return nil
 }
@@ -291,6 +294,7 @@ func (c *Client) importMessageBatch(db *sql.DB, logger *slog.Logger, folder stri
 			entry.ID, entry.AccountID, entry.IMAPUID, entry.IMAPFolder,
 			entry.Subject, entry.Sender, entry.RecipientsTo, entry.RecipientsCC,
 			entry.DateUTC, entry.IsRead, entry.IsReplied,
+			entry.MessageID, entry.InReplyTo,
 		)
 		if err != nil {
 			tx.Rollback()
@@ -343,8 +347,9 @@ func prepareBatchStmts(tx *sql.Tx) (*batchStmts, error) {
 	entry, err := tx.Prepare(`
 		INSERT INTO mail_entries
 			(id, account_id, imap_uid, imap_folder, subject, sender,
-			 recipients_to, recipients_cc, date_utc, is_read, is_replied)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 recipients_to, recipients_cc, date_utc, is_read, is_replied,
+			 message_id, in_reply_to)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO NOTHING`)
 	if err != nil {
 		return nil, fmt.Errorf("sync: prepare entry stmt: %w", err)
@@ -501,9 +506,106 @@ func (c *Client) backfillFlags(db *sql.DB, logger *slog.Logger, folder string) e
 	return nil
 }
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
+// backfillEnvelope fetches ENVELOPE from IMAP for all mail_entries rows in this
+// folder that still have message_id IS NULL (i.e. synced before R6 was deployed).
+// It processes UIDs in batches of 500 and is resumable: a crash mid-way will
+// be continued on the next server start. This can take a while for large mailboxes.
+func (c *Client) backfillEnvelope(db *sql.DB, logger *slog.Logger, folder string) error {
+	const batchSize = 500
+
+	// Only fetch UIDs that still have no message_id.
+	rows, err := db.Query(
+		`SELECT imap_uid FROM mail_entries WHERE account_id = ? AND imap_folder = ? AND message_id IS NULL ORDER BY imap_uid`,
+		c.cfg.ID, folder,
+	)
+	if err != nil {
+		return fmt.Errorf("backfillEnvelope: query null rows: %w", err)
+	}
+	var uids []uint32
+	for rows.Next() {
+		var uid uint32
+		if err := rows.Scan(&uid); err == nil {
+			uids = append(uids, uid)
+		}
+	}
+	rows.Close()
+
+	if len(uids) == 0 {
+		return nil
+	}
+	logger.Info("envelope backfill needed — fetching message-id/in-reply-to for existing mails (this may take a while)",
+		"folder", folder, "count", len(uids))
+
+	total := len(uids)
+	for start := 0; start < total; start += batchSize {
+		end := start + batchSize
+		if end > total {
+			end = total
+		}
+		batch := uids[start:end]
+
+		var uidSet imap.UIDSet
+		for _, uid := range batch {
+			uidSet.AddNum(imap.UID(uid))
+		}
+
+		fetchCmd := c.client.Fetch(uidSet, &imap.FetchOptions{UID: true, Envelope: true})
+		type envResult struct {
+			uid       uint32
+			msgID     *string
+			inReplyTo *string
+		}
+		var results []envResult
+		for {
+			msg := fetchCmd.Next()
+			if msg == nil {
+				break
+			}
+			buf, err := msg.Collect()
+			if err != nil {
+				logger.Warn("backfillEnvelope: collect error", "err", err)
+				continue
+			}
+			if buf.Envelope == nil {
+				continue
+			}
+			results = append(results, envResult{
+				uid:       uint32(buf.UID),
+				msgID:     nullableString(strings.TrimSpace(buf.Envelope.MessageID)),
+				inReplyTo: nullableString(strings.TrimSpace(strings.Join(buf.Envelope.InReplyTo, " "))),
+			})
+		}
+		if err := fetchCmd.Close(); err != nil {
+			logger.Warn("backfillEnvelope: fetch close error", "err", err)
+		}
+
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("backfillEnvelope: begin tx: %w", err)
+		}
+		stmt, err := tx.Prepare(`UPDATE mail_entries SET message_id=?, in_reply_to=? WHERE account_id=? AND imap_folder=? AND imap_uid=?`)
+		if err != nil {
+			tx.Rollback()
+			return fmt.Errorf("backfillEnvelope: prepare: %w", err)
+		}
+		for _, r := range results {
+			if _, err := stmt.Exec(r.msgID, r.inReplyTo, c.cfg.ID, folder, r.uid); err != nil {
+				logger.Warn("backfillEnvelope: update row", "uid", r.uid, "err", err)
+			}
+		}
+		stmt.Close()
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("backfillEnvelope: commit: %w", err)
+		}
+		logger.Info("envelope backfill batch done",
+			"folder", folder,
+			"processed", end,
+			"total", total,
+			"percent", end*100/total,
+		)
+	}
+	return nil
+}
 
 type mailEntry struct {
 	ID           string
@@ -514,9 +616,11 @@ type mailEntry struct {
 	Sender       string
 	RecipientsTo string
 	RecipientsCC string
-	DateUTC      any  // nil when the message has no Date header
-	IsRead       *int // nil = unknown; 0 = unread; 1 = read
-	IsReplied    *int // nil = unknown; 0 = not replied; 1 = replied
+	DateUTC      any     // nil when the message has no Date header
+	IsRead       *int    // nil = unknown; 0 = unread; 1 = read
+	IsReplied    *int    // nil = unknown; 0 = not replied; 1 = replied
+	MessageID    *string // nil = not yet fetched
+	InReplyTo    *string // nil = not yet fetched
 }
 
 func buildEntry(accountID, folder string, uid uint32, msg *imapclient.FetchMessageBuffer) mailEntry {
@@ -535,6 +639,8 @@ func buildEntry(accountID, folder string, uid uint32, msg *imapclient.FetchMessa
 	}
 
 	isRead, isReplied := flagInts(msg.Flags)
+	msgID := nullableString(strings.TrimSpace(env.MessageID))
+	inReplyTo := nullableString(strings.TrimSpace(strings.Join(env.InReplyTo, " ")))
 	return mailEntry{
 		ID:           id,
 		AccountID:    accountID,
@@ -547,7 +653,17 @@ func buildEntry(accountID, folder string, uid uint32, msg *imapclient.FetchMessa
 		DateUTC:      dateUTC,
 		IsRead:       isRead,
 		IsReplied:    isReplied,
+		MessageID:    msgID,
+		InReplyTo:    inReplyTo,
 	}
+}
+
+// nullableString returns nil for empty strings, otherwise a pointer to the value.
+func nullableString(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 // flagInts converts an IMAP flags slice into nullable int pointers.
