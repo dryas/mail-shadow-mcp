@@ -111,15 +111,18 @@ func TestHandleGetRecentActivity_Basic(t *testing.T) {
 
 	out := callTool(t, h, map[string]any{"limit": float64(10)})
 
-	var result []mailSummary
-	if err := json.Unmarshal([]byte(out), &result); err != nil {
+	var page pagedResult[mailSummary]
+	if err := json.Unmarshal([]byte(out), &page); err != nil {
 		t.Fatalf("JSON parse: %v\nraw: %s", err, out)
 	}
-	if len(result) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(result))
+	if len(page.Results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(page.Results))
 	}
-	if result[0].Subject != "Hello world" {
-		t.Errorf("unexpected subject: %q", result[0].Subject)
+	if page.Results[0].Subject != "Hello world" {
+		t.Errorf("unexpected subject: %q", page.Results[0].Subject)
+	}
+	if page.TotalCount != 1 {
+		t.Errorf("expected total_count 1, got %d", page.TotalCount)
 	}
 }
 
@@ -130,10 +133,10 @@ func TestHandleGetRecentActivity_FilterByAccount(t *testing.T) {
 	h := handleGetRecentActivity(database)
 
 	out := callTool(t, h, map[string]any{"account": "acc1"})
-	var result []mailSummary
-	json.Unmarshal([]byte(out), &result)
-	if len(result) != 1 || result[0].AccountID != "acc1" {
-		t.Errorf("expected 1 result for acc1, got %d: %+v", len(result), result)
+	var page pagedResult[mailSummary]
+	json.Unmarshal([]byte(out), &page)
+	if len(page.Results) != 1 || page.Results[0].AccountID != "acc1" {
+		t.Errorf("expected 1 result for acc1, got %d: %+v", len(page.Results), page.Results)
 	}
 }
 
@@ -179,12 +182,15 @@ func TestHandleSearchEmails_FullText(t *testing.T) {
 	h := handleSearchEmails(database)
 
 	out := callTool(t, h, map[string]any{"query": "invoice"})
-	var result []mailSummary
-	if err := json.Unmarshal([]byte(out), &result); err != nil {
+	var page pagedResult[mailSummary]
+	if err := json.Unmarshal([]byte(out), &page); err != nil {
 		t.Fatalf("JSON parse: %v\nraw: %s", err, out)
 	}
-	if len(result) != 1 {
-		t.Errorf("expected 1 FTS match, got %d", len(result))
+	if len(page.Results) != 1 {
+		t.Errorf("expected 1 FTS match, got %d", len(page.Results))
+	}
+	if page.TotalCount != 1 {
+		t.Errorf("expected total_count 1, got %d", page.TotalCount)
 	}
 }
 
@@ -195,10 +201,10 @@ func TestHandleSearchEmails_NoQuery_SenderFilter(t *testing.T) {
 	h := handleSearchEmails(database)
 
 	out := callTool(t, h, map[string]any{"sender": "alice"})
-	var result []mailSummary
-	json.Unmarshal([]byte(out), &result)
-	if len(result) != 1 || !strings.Contains(result[0].Sender, "alice") {
-		t.Errorf("expected 1 result for alice, got %d: %+v", len(result), result)
+	var page pagedResult[mailSummary]
+	json.Unmarshal([]byte(out), &page)
+	if len(page.Results) != 1 || !strings.Contains(page.Results[0].Sender, "alice") {
+		t.Errorf("expected 1 result for alice, got %d: %+v", len(page.Results), page.Results)
 	}
 }
 
@@ -213,9 +219,12 @@ func TestHandleSearchEmails_LimitDefault(t *testing.T) {
 	}
 	h := handleSearchEmails(database)
 	out := callTool(t, h, map[string]any{})
-	var result []mailSummary
-	json.Unmarshal([]byte(out), &result)
-	if len(result) != 5 {
-		t.Errorf("expected 5 results, got %d", len(result))
+	var page pagedResult[mailSummary]
+	json.Unmarshal([]byte(out), &page)
+	if len(page.Results) != 5 {
+		t.Errorf("expected 5 results, got %d", len(page.Results))
+	}
+	if page.TotalCount != 5 {
+		t.Errorf("expected total_count 5, got %d", page.TotalCount)
 	}
 }

@@ -113,6 +113,25 @@ func (qb *queryBuilder) sql() string {
 	return strings.Join(qb.parts, "")
 }
 
+// toCountQuery returns a new queryBuilder that runs SELECT COUNT(*) with the
+// same WHERE conditions but without ORDER BY / LIMIT / OFFSET.
+// Convention: the last part is always the ORDER BY+LIMIT+OFFSET fragment, and
+// the last two args are always limit and offset — both are stripped here.
+// The inner query is wrapped as a subquery to avoid SELECT-clause surgery.
+func (qb *queryBuilder) toCountQuery() *queryBuilder {
+	// Build inner query: all parts except the last (ORDER BY LIMIT OFFSET).
+	inner := strings.Join(qb.parts[:len(qb.parts)-1], "")
+	// Args: drop last two (limit, offset).
+	var innerArgs []any
+	if len(qb.args) >= 2 {
+		innerArgs = qb.args[:len(qb.args)-2]
+	}
+	cq := &queryBuilder{}
+	cq.parts = []string{"SELECT COUNT(*) FROM (" + inner + ")"}
+	cq.args = append(cq.args, innerArgs...)
+	return cq
+}
+
 // ---------------------------------------------------------------------------
 // Tool: list_accounts_and_folders
 // ---------------------------------------------------------------------------
@@ -172,13 +191,21 @@ func handleListAccountsAndFolders(db *sql.DB, cfg *config.Config) server.ToolHan
 	}
 }
 
+// pagedResult wraps a paginated tool response with total_count metadata.
+type pagedResult[T any] struct {
+	TotalCount int `json:"total_count"`
+	Offset     int `json:"offset"`
+	Limit      int `json:"limit"`
+	Results    []T `json:"results"`
+}
+
 // ---------------------------------------------------------------------------
 // Tool: get_recent_activity
 // ---------------------------------------------------------------------------
 
 func toolGetRecentActivity() mcp.Tool {
 	return mcp.NewTool("get_recent_activity",
-		mcp.WithDescription("Returns the N most recently received emails across ALL folders and accounts, sorted by date descending. All parameters are optional filters — omit them to get a global view across everything."),
+		mcp.WithDescription("Returns the N most recently received emails across ALL folders and accounts, sorted by date descending. All parameters are optional filters — omit them to get a global view across everything. The response includes total_count so you know how many results exist in total for pagination."),
 		mcp.WithString("account",
 			mcp.Description("Optional: restrict to a specific account ID. Omit to include all accounts."),
 		),
@@ -273,7 +300,19 @@ func handleGetRecentActivity(db *sql.DB) server.ToolHandlerFunc {
 			results = append(results, m)
 		}
 
-		out, _ := json.MarshalIndent(results, "", "  ")
+		var total int
+		if err := db.QueryRowContext(ctx, qb.toCountQuery().sql(), qb.toCountQuery().args...).Scan(&total); err != nil {
+			slog.Warn("get_recent_activity: count query failed", "err", err)
+		}
+		if results == nil {
+			results = []mailSummary{}
+		}
+		out, _ := json.MarshalIndent(pagedResult[mailSummary]{
+			TotalCount: total,
+			Offset:     offset,
+			Limit:      limit,
+			Results:    results,
+		}, "", "  ")
 		return mcp.NewToolResultText(string(out)), nil
 	}
 }
@@ -369,7 +408,7 @@ func handleGetEmailContent(db *sql.DB) server.ToolHandlerFunc {
 
 func toolSearchEmails() mcp.Tool {
 	return mcp.NewTool("search_emails",
-		mcp.WithDescription("Full-text search across email subjects and bodies, with optional filters."),
+		mcp.WithDescription("Full-text search across email subjects and bodies, with optional metadata filters. The response includes total_count so you know how many results match in total for pagination."),
 		mcp.WithString("query",
 			mcp.Description("Full-text search term. Searches across both the email subject AND the full message body (via FTS5). Leave empty to use metadata filters only."),
 		),
@@ -540,7 +579,19 @@ func handleSearchEmails(db *sql.DB) server.ToolHandlerFunc {
 			results = append(results, m)
 		}
 
-		out, _ := json.MarshalIndent(results, "", "  ")
+		var total int
+		if err := db.QueryRowContext(ctx, qb.toCountQuery().sql(), qb.toCountQuery().args...).Scan(&total); err != nil {
+			slog.Warn("search_emails: count query failed", "err", err)
+		}
+		if results == nil {
+			results = []searchResult{}
+		}
+		out, _ := json.MarshalIndent(pagedResult[searchResult]{
+			TotalCount: total,
+			Offset:     p.offset,
+			Limit:      p.limit,
+			Results:    results,
+		}, "", "  ")
 		return mcp.NewToolResultText(string(out)), nil
 	}
 }
