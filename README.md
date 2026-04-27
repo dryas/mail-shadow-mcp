@@ -10,7 +10,7 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/dryas/mail-shadow-mcp)](https://goreportcard.com/report/github.com/dryas/mail-shadow-mcp)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
 
-**mail-shadow-mcp** is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that creates a local shadow copy of your IMAP mailboxes in a SQLite database. AI agents query the local database through five well-defined MCP tools instead of connecting directly to your IMAP server.
+**mail-shadow-mcp** is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that creates a local shadow copy of your IMAP mailboxes in a SQLite database. AI agents query the local database through well-defined MCP tools instead of connecting directly to your IMAP server.
 
 ```
 [Remote IMAP Server] ──IMAP──▶ [Sync Engine] ──▶ [SQLite FTS5] ◀──▶ [MCP Server] ◀──▶ [AI Agent]
@@ -25,6 +25,10 @@
 - **Incremental sync** — only fetches messages newer than the last known UID
 - **Full-text search** — SQLite FTS5 index for fast body-text queries
 - **Multi-account** — sync any number of IMAP accounts simultaneously
+- **IMAP IDLE** — optional real-time push notifications; new mail detected within seconds instead of waiting for the next poll interval
+- **Read/replied status** — `is_read` and `is_replied` flags synced from IMAP and exposed as filters
+- **Thread view** — `get_thread` walks full email conversations via `Message-ID` / `In-Reply-To` headers
+- **Paginated results** — all list tools return `total_count` so agents can page through large result sets
 - **On-demand attachments** — attachment files are fetched from IMAP only when explicitly requested
 
 ---
@@ -34,9 +38,10 @@
 | Tool | Description |
 |---|---|
 | `list_accounts_and_folders` | List all synced accounts and their folders |
-| `get_recent_activity` | N most recent emails with optional metadata filters |
-| `get_email_content` | Full body text and attachment list for a single email |
-| `search_emails` | FTS5 full-text search with subject/sender/date filters |
+| `get_recent_activity` | N most recent emails with optional filters (`is_read`, `has_attachments`, pagination) |
+| `get_email_content` | Full body text, read/replied status, and attachment list for a single email |
+| `search_emails` | FTS5 full-text search with subject/sender/date/folder/`is_read`/`sent_by` filters |
+| `get_thread` | All emails in the same thread as a given email, sorted by date ascending |
 | `download_attachments` | Fetch attachment files from IMAP and save them to disk |
 | `get_download_link` | Generate a temporary HTTP download URL for attachments (optional fallback) |
 
@@ -69,6 +74,11 @@ database:
 
 attachment_dir: "data/attachments"
 
+# Optional: structured JSON logs for Loki / Elasticsearch pipelines.
+# log_format: json   # json | text (default: text)
+# log_level: info    # debug | info | warn | error (default: info)
+# log_file: "/var/log/mail-shadow-mcp.log"  # omit to use stderr
+
 # Optional: lightweight HTTP server for temporary attachment download links.
 # Only enable this if you need the get_download_link MCP tool (e.g. as a
 # fallback when the AI agent cannot transfer files via its normal channels).
@@ -83,6 +93,7 @@ accounts:
     username: "work@example.com"
     password: "$WORK_IMAP_PASS"   # or plain text
     folders: ["INBOX", "Archive"] # only sync the mentioned folders
+    # idle_folders: ["INBOX"]     # optional: IMAP IDLE for real-time push on these folders
   - id: "private@example.com"
     host: "imap.example.com"
     port: 993
@@ -164,6 +175,25 @@ Example for OpenClaw (`~/.openclaw/openclaw.json`):
 | `none` | 143 | No encryption — localhost/testing only |
 
 Set `tls_skip_verify: true` to accept self-signed certificates.
+
+---
+
+## IMAP IDLE (Real-time Push)
+
+By default, mail-shadow-mcp polls for new messages every `sync_interval_min` minutes. For folders where you want near-instant notifications, enable IMAP IDLE:
+
+```yaml
+accounts:
+  - id: "work@example.com"
+    # ...
+    idle_folders: ["INBOX"]   # IDLE runs on top of regular polling
+```
+
+- One dedicated IMAP connection is opened per entry in `idle_folders`
+- When the server sends an `EXISTS` notification, a sync is triggered immediately
+- Regular polling continues unchanged for all other folders
+- Falls back to polling automatically if the server does not support IDLE
+- Exponential backoff (30 s → 5 min) on persistent connection errors
 
 ---
 
