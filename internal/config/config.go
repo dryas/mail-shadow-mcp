@@ -53,6 +53,7 @@ type AccountConfig struct {
 	TLSMode       string   `yaml:"tls_mode"`        // "tls" (default) | "starttls" | "none"
 	TLSSkipVerify bool     `yaml:"tls_skip_verify"` // disable certificate verification (e.g. self-signed certs)
 	Folders       []string `yaml:"folders"`         // optional; empty means sync all folders
+	IdleFolders   []string `yaml:"idle_folders"`    // optional; folders watched via IMAP IDLE for instant notification
 }
 
 // Load reads the YAML config file at path, substitutes $ENV_VAR references

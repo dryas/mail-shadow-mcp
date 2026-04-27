@@ -77,6 +77,7 @@ func cmdServe(args []string) {
 		"sync_interval", syncInterval,
 	)
 
+	// Poll accounts: initial sync + periodic ticker.
 	runSync := func() {
 		results := imapsync.RunAll(cfg, database)
 		for _, r := range results {
@@ -87,7 +88,6 @@ func cmdServe(args []string) {
 			}
 		}
 	}
-
 	go runSync()
 	go func() {
 		ticker := time.NewTicker(syncInterval)
@@ -96,6 +96,9 @@ func cmdServe(args []string) {
 			runSync()
 		}
 	}()
+
+	// IDLE accounts: persistent push-based sync (no-op if none configured).
+	go imapsync.RunIDLE(cfg, database)
 
 	dlServer := startFileServer(cfg)
 

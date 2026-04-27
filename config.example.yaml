@@ -28,6 +28,8 @@ accounts:
                                     # none (no encryption — localhost/testing only)
     tls_skip_verify: false          # set true for self-signed certificates
     folders: ["INBOX", "Archive"]   # optional: omit to sync all folders
+    # idle_folders: ["INBOX"]       # optional: folders watched via IMAP IDLE for instant new-mail notification
+                                    # all folders are still polled on the normal interval regardless
 
   - id: "personal@example.com"
     host: "imap.example.com"
