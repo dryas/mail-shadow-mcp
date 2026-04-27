@@ -175,6 +175,9 @@ func (c *Client) SyncFolder(db *sql.DB, folder string) error {
 	logger.Info("sync complete, optimizing FTS index...", "new_messages", total, "max_uid", totalMaxUID)
 	persistUIDValidity(db, logger, c.cfg.ID, folder, uint32(selData.UIDValidity))
 	optimizeFTS(db, logger)
+	if err := c.backfillFlags(db, logger, folder); err != nil {
+		logger.Warn("flag backfill failed", "err", err)
+	}
 	logger.Info("sync complete", "new_messages", total, "max_uid", totalMaxUID)
 	return nil
 }
@@ -218,6 +221,7 @@ func (c *Client) fetchNewMessages(logger *slog.Logger, lastUID uint32, expected 
 		UID:           true,
 		Envelope:      true,
 		InternalDate:  true,
+		Flags:         true,
 		BodyStructure: &imap.FetchItemBodyStructure{Extended: true},
 		// Peek: fetch full body text without marking messages as \Seen on the server.
 		BodySection: []*imap.FetchItemBodySection{
@@ -286,7 +290,7 @@ func (c *Client) importMessageBatch(db *sql.DB, logger *slog.Logger, folder stri
 		res, err := stmts.entry.Exec(
 			entry.ID, entry.AccountID, entry.IMAPUID, entry.IMAPFolder,
 			entry.Subject, entry.Sender, entry.RecipientsTo, entry.RecipientsCC,
-			entry.DateUTC,
+			entry.DateUTC, entry.IsRead, entry.IsReplied,
 		)
 		if err != nil {
 			tx.Rollback()
@@ -337,10 +341,11 @@ type batchStmts struct {
 
 func prepareBatchStmts(tx *sql.Tx) (*batchStmts, error) {
 	entry, err := tx.Prepare(`
-		INSERT OR IGNORE INTO mail_entries
+		INSERT INTO mail_entries
 			(id, account_id, imap_uid, imap_folder, subject, sender,
-			 recipients_to, recipients_cc, date_utc)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			 recipients_to, recipients_cc, date_utc, is_read, is_replied)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO NOTHING`)
 	if err != nil {
 		return nil, fmt.Errorf("sync: prepare entry stmt: %w", err)
 	}
@@ -400,6 +405,102 @@ func optimizeFTS(db *sql.DB, logger *slog.Logger) {
 	}
 }
 
+// backfillFlags fetches FLAGS from IMAP for all mail_entries rows in this folder
+// that still have is_read IS NULL (i.e. synced before R2 was deployed).
+// It processes UIDs in batches of 1000 so a crash mid-way is resumable.
+func (c *Client) backfillFlags(db *sql.DB, logger *slog.Logger, folder string) error {
+	const batchSize = 1000
+
+	// Collect all UIDs that still need backfill.
+	rows, err := db.Query(
+		`SELECT imap_uid FROM mail_entries WHERE account_id = ? AND imap_folder = ? AND is_read IS NULL ORDER BY imap_uid`,
+		c.cfg.ID, folder,
+	)
+	if err != nil {
+		return fmt.Errorf("backfillFlags: query null rows: %w", err)
+	}
+	var uids []uint32
+	for rows.Next() {
+		var uid uint32
+		if err := rows.Scan(&uid); err == nil {
+			uids = append(uids, uid)
+		}
+	}
+	rows.Close()
+
+	if len(uids) == 0 {
+		return nil
+	}
+	logger.Info("flag backfill needed", "folder", folder, "count", len(uids))
+
+	for start := 0; start < len(uids); start += batchSize {
+		end := start + batchSize
+		if end > len(uids) {
+			end = len(uids)
+		}
+		batch := uids[start:end]
+
+		var uidSet imap.UIDSet
+		for _, uid := range batch {
+			uidSet.AddNum(imap.UID(uid))
+		}
+
+		fetchCmd := c.client.Fetch(uidSet, &imap.FetchOptions{UID: true, Flags: true})
+		type flagResult struct {
+			uid       uint32
+			isRead    int
+			isReplied int
+		}
+		var results []flagResult
+		for {
+			msg := fetchCmd.Next()
+			if msg == nil {
+				break
+			}
+			buf, err := msg.Collect()
+			if err != nil {
+				logger.Warn("backfillFlags: collect error", "err", err)
+				continue
+			}
+			isRead, isReplied := 0, 0
+			for _, f := range buf.Flags {
+				switch f {
+				case imap.FlagSeen:
+					isRead = 1
+				case imap.FlagAnswered:
+					isReplied = 1
+				}
+			}
+			results = append(results, flagResult{uint32(buf.UID), isRead, isReplied})
+		}
+		if err := fetchCmd.Close(); err != nil {
+			logger.Warn("backfillFlags: fetch close error", "err", err)
+		}
+
+		// Write results in a single transaction per batch.
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("backfillFlags: begin tx: %w", err)
+		}
+		stmt, err := tx.Prepare(`UPDATE mail_entries SET is_read=?, is_replied=? WHERE account_id=? AND imap_folder=? AND imap_uid=?`)
+		if err != nil {
+			tx.Rollback()
+			return fmt.Errorf("backfillFlags: prepare: %w", err)
+		}
+		for _, r := range results {
+			if _, err := stmt.Exec(r.isRead, r.isReplied, c.cfg.ID, folder, r.uid); err != nil {
+				logger.Warn("backfillFlags: update row", "uid", r.uid, "err", err)
+			}
+		}
+		stmt.Close()
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("backfillFlags: commit: %w", err)
+		}
+		logger.Info("flag backfill batch done", "folder", folder, "uids_in_batch", len(batch), "flags_received", len(results))
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -413,7 +514,9 @@ type mailEntry struct {
 	Sender       string
 	RecipientsTo string
 	RecipientsCC string
-	DateUTC      any // nil when the message has no Date header
+	DateUTC      any  // nil when the message has no Date header
+	IsRead       *int // nil = unknown; 0 = unread; 1 = read
+	IsReplied    *int // nil = unknown; 0 = not replied; 1 = replied
 }
 
 func buildEntry(accountID, folder string, uid uint32, msg *imapclient.FetchMessageBuffer) mailEntry {
@@ -431,6 +534,7 @@ func buildEntry(accountID, folder string, uid uint32, msg *imapclient.FetchMessa
 		dateUTC = env.Date.UTC()
 	}
 
+	isRead, isReplied := flagInts(msg.Flags)
 	return mailEntry{
 		ID:           id,
 		AccountID:    accountID,
@@ -441,7 +545,27 @@ func buildEntry(accountID, folder string, uid uint32, msg *imapclient.FetchMessa
 		RecipientsTo: formatAddresses(env.To),
 		RecipientsCC: formatAddresses(env.Cc),
 		DateUTC:      dateUTC,
+		IsRead:       isRead,
+		IsReplied:    isReplied,
 	}
+}
+
+// flagInts converts an IMAP flags slice into nullable int pointers.
+// Returns non-nil pointers only when the flags slice is non-nil (i.e. was fetched).
+func flagInts(flags []imap.Flag) (*int, *int) {
+	if flags == nil {
+		return nil, nil
+	}
+	read, replied := 0, 0
+	for _, f := range flags {
+		switch f {
+		case imap.FlagSeen:
+			read = 1
+		case imap.FlagAnswered:
+			replied = 1
+		}
+	}
+	return &read, &replied
 }
 
 func getLastUID(db *sql.DB, accountID, folder string) (uint32, error) {

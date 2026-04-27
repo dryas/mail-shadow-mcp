@@ -134,6 +134,9 @@ func Migrate(db *sql.DB) error {
 	// Column additions — idempotent: ignore "duplicate column name" errors from SQLite.
 	columnMigrations := []string{
 		`ALTER TABLE sync_state ADD COLUMN uid_validity INTEGER NOT NULL DEFAULT 0`,
+		// Nullable: NULL means "flags not yet fetched" (pre-migration rows or backfill pending).
+		`ALTER TABLE mail_entries ADD COLUMN is_read    INTEGER`,
+		`ALTER TABLE mail_entries ADD COLUMN is_replied INTEGER`,
 	}
 	for _, stmt := range columnMigrations {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column name") {

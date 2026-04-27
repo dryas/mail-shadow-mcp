@@ -221,6 +221,9 @@ func toolGetRecentActivity() mcp.Tool {
 		mcp.WithString("has_attachments",
 			mcp.Description(`Optional: filter by attachment presence. "true" = only emails with attachments, "false" = only without. Omit to include all.`),
 		),
+		mcp.WithString("is_read",
+			mcp.Description(`Optional: filter by read status. "true" = only read emails, "false" = only unread. Omit to include all.`),
+		),
 	)
 }
 
@@ -232,6 +235,8 @@ type mailSummary struct {
 	Sender       string             `json:"sender"`
 	RecipientsTo string             `json:"recipients_to"`
 	DateUTC      *string            `json:"date_utc"`
+	IsRead       *bool              `json:"is_read"`
+	IsReplied    *bool              `json:"is_replied"`
 	Attachments  []attachmentDetail `json:"attachments"`
 }
 
@@ -246,9 +251,13 @@ func handleGetRecentActivity(db *sql.DB) server.ToolHandlerFunc {
 		limit := int(req.GetFloat("limit", 10))
 		offset := int(req.GetFloat("offset", 0))
 		hasAttachments := req.GetString("has_attachments", "")
+		isRead := req.GetString("is_read", "")
 		slog.Info("tool called", "tool", "get_recent_activity", "account", account, "folder", folder, "limit", limit, "offset", offset, "has_attachments", hasAttachments)
 		if msg := validateHasAttachments(hasAttachments); msg != "" {
 			return mcp.NewToolResultError(msg), nil
+		}
+		if msg := validateHasAttachments(isRead); msg != "" {
+			return mcp.NewToolResultError("is_read: " + msg), nil
 		}
 		if limit <= 0 || limit > 100 {
 			limit = 10
@@ -258,7 +267,7 @@ func handleGetRecentActivity(db *sql.DB) server.ToolHandlerFunc {
 		}
 
 		qb := &queryBuilder{}
-		qb.write(`SELECT e.id, e.account_id, e.imap_folder, e.subject, e.sender, e.recipients_to, e.date_utc, ` +
+		qb.write(`SELECT e.id, e.account_id, e.imap_folder, e.subject, e.sender, e.recipients_to, e.date_utc, e.is_read, e.is_replied, ` +
 			fetchAttachmentsSubquery +
 			` FROM mail_entries e WHERE 1=1`)
 		if account != "" {
@@ -271,6 +280,11 @@ func handleGetRecentActivity(db *sql.DB) server.ToolHandlerFunc {
 			qb.and("EXISTS (SELECT 1 FROM mail_attachments WHERE entry_id = e.id)")
 		} else if hasAttachments == "false" {
 			qb.and("NOT EXISTS (SELECT 1 FROM mail_attachments WHERE entry_id = e.id)")
+		}
+		if isRead == "true" {
+			qb.and("e.is_read = 1")
+		} else if isRead == "false" {
+			qb.and("e.is_read = 0")
 		}
 		qb.write(` ORDER BY e.date_utc DESC NULLS LAST LIMIT ? OFFSET ?`)
 		qb.args = append(qb.args, limit, offset)
@@ -285,14 +299,23 @@ func handleGetRecentActivity(db *sql.DB) server.ToolHandlerFunc {
 		for rows.Next() {
 			var m mailSummary
 			var rawDate sql.NullTime
+			var rawIsRead, rawIsReplied sql.NullInt64
 			var attJSON string
-			if err := rows.Scan(&m.ID, &m.AccountID, &m.Folder, &m.Subject, &m.Sender, &m.RecipientsTo, &rawDate, &attJSON); err != nil {
+			if err := rows.Scan(&m.ID, &m.AccountID, &m.Folder, &m.Subject, &m.Sender, &m.RecipientsTo, &rawDate, &rawIsRead, &rawIsReplied, &attJSON); err != nil {
 				slog.Warn("get_recent_activity: row scan failed", "err", err)
 				continue
 			}
 			if rawDate.Valid {
 				s := rawDate.Time.UTC().Format(time.RFC3339)
 				m.DateUTC = &s
+			}
+			if rawIsRead.Valid {
+				v := rawIsRead.Int64 != 0
+				m.IsRead = &v
+			}
+			if rawIsReplied.Valid {
+				v := rawIsReplied.Int64 != 0
+				m.IsReplied = &v
 			}
 			if err := json.Unmarshal([]byte(attJSON), &m.Attachments); err != nil {
 				m.Attachments = []attachmentDetail{}
@@ -445,6 +468,9 @@ func toolSearchEmails() mcp.Tool {
 		mcp.WithString("has_attachments",
 			mcp.Description(`Optional: filter by attachment presence. "true" = only emails with attachments, "false" = only without. Omit to include all.`),
 		),
+		mcp.WithString("is_read",
+			mcp.Description(`Optional: filter by read status. "true" = only read emails, "false" = only unread. Omit to include all.`),
+		),
 	)
 }
 
@@ -452,6 +478,7 @@ func toolSearchEmails() mcp.Tool {
 type searchParams struct {
 	query, account, subject, sender, recipient string
 	dateFrom, dateTo, folder, hasAttachments   string
+	isRead                                     string
 	limit, offset                              int
 	includeBody                                bool
 }
@@ -470,6 +497,7 @@ func parseSearchParams(req mcp.CallToolRequest) searchParams {
 		offset:         int(req.GetFloat("offset", 0)),
 		includeBody:    req.GetBool("include_body", false),
 		hasAttachments: req.GetString("has_attachments", ""),
+		isRead:         req.GetString("is_read", ""),
 	}
 	if p.limit <= 0 || p.limit > 100 {
 		p.limit = 10
@@ -485,7 +513,7 @@ func buildSearchQuery(p searchParams) *queryBuilder {
 	if p.includeBody {
 		bodyExpr = `COALESCE((SELECT body_text FROM mail_content WHERE entry_id = e.id), '')`
 	}
-	selectClause := `SELECT e.id, e.account_id, e.imap_folder, e.subject, e.sender, e.recipients_to, e.date_utc, ` + fetchAttachmentsSubquery + `, ` + bodyExpr
+	selectClause := `SELECT e.id, e.account_id, e.imap_folder, e.subject, e.sender, e.recipients_to, e.date_utc, e.is_read, e.is_replied, ` + fetchAttachmentsSubquery + `, ` + bodyExpr
 
 	qb := &queryBuilder{}
 	if p.query != "" {
@@ -519,6 +547,11 @@ func buildSearchQuery(p searchParams) *queryBuilder {
 		qb.and("e.imap_folder = ?", p.folder)
 	}
 	applyAttachmentFilter(qb, p.hasAttachments)
+	if p.isRead == "true" {
+		qb.and("e.is_read = 1")
+	} else if p.isRead == "false" {
+		qb.and("e.is_read = 0")
+	}
 
 	qb.write(` ORDER BY e.date_utc DESC NULLS LAST LIMIT ? OFFSET ?`)
 	qb.args = append(qb.args, p.limit, p.offset)
@@ -540,6 +573,9 @@ func handleSearchEmails(db *sql.DB) server.ToolHandlerFunc {
 		slog.Info("tool called", "tool", "search_emails", "query", p.query, "account", p.account, "sender", p.sender, "date_from", p.dateFrom, "date_to", p.dateTo, "limit", p.limit, "offset", p.offset)
 		if msg := validateHasAttachments(p.hasAttachments); msg != "" {
 			return mcp.NewToolResultError(msg), nil
+		}
+		if msg := validateHasAttachments(p.isRead); msg != "" {
+			return mcp.NewToolResultError("is_read: " + msg), nil
 		}
 		if msg := validateDate("date_from", p.dateFrom); msg != "" {
 			return mcp.NewToolResultError(msg), nil
@@ -564,14 +600,23 @@ func handleSearchEmails(db *sql.DB) server.ToolHandlerFunc {
 		for rows.Next() {
 			var m searchResult
 			var rawDate sql.NullTime
+			var rawIsRead, rawIsReplied sql.NullInt64
 			var attJSON string
-			if err := rows.Scan(&m.ID, &m.AccountID, &m.Folder, &m.Subject, &m.Sender, &m.RecipientsTo, &rawDate, &attJSON, &m.BodyText); err != nil {
+			if err := rows.Scan(&m.ID, &m.AccountID, &m.Folder, &m.Subject, &m.Sender, &m.RecipientsTo, &rawDate, &rawIsRead, &rawIsReplied, &attJSON, &m.BodyText); err != nil {
 				slog.Warn("search_emails: row scan failed", "err", err)
 				continue
 			}
 			if rawDate.Valid {
 				s := rawDate.Time.UTC().Format(time.RFC3339)
 				m.DateUTC = &s
+			}
+			if rawIsRead.Valid {
+				v := rawIsRead.Int64 != 0
+				m.IsRead = &v
+			}
+			if rawIsReplied.Valid {
+				v := rawIsReplied.Int64 != 0
+				m.IsReplied = &v
 			}
 			if err := json.Unmarshal([]byte(attJSON), &m.Attachments); err != nil {
 				m.Attachments = []attachmentDetail{}
