@@ -574,7 +574,11 @@ func buildSearchQuery(p searchParams) *queryBuilder {
 		qb.write(selectClause + `
 		FROM mail_entries e
 		WHERE e.id IN (SELECT entry_id FROM mail_content_fts WHERE mail_content_fts MATCH ?)`)
-		qb.args = append(qb.args, p.query)
+		// Wrap the user query in FTS5 phrase quotes so that special characters
+		// like ":", "-", "*", "(" etc. are treated as literals and not as FTS5
+		// query syntax (e.g. "Re:" would otherwise be parsed as column "Re").
+		// Any embedded double-quote must be doubled per FTS5 escaping rules.
+		qb.args = append(qb.args, `"`+strings.ReplaceAll(p.query, `"`, `""`)+`"`)
 	} else {
 		qb.write(selectClause + ` FROM mail_entries e WHERE 1=1`)
 	}
