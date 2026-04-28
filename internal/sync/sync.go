@@ -144,6 +144,12 @@ func (c *Client) SyncFolder(db *sql.DB, folder string) error {
 	}
 	if len(msgs) == 0 {
 		logger.Info("folder up to date, no new messages")
+		if err := c.backfillFlags(db, logger, folder); err != nil {
+			logger.Warn("flag backfill failed", "err", err)
+		}
+		if err := c.backfillEnvelope(db, logger, folder); err != nil {
+			logger.Warn("envelope backfill failed", "err", err)
+		}
 		return nil
 	}
 
