@@ -275,3 +275,56 @@ func TestHandleGetThread_NotFound(t *testing.T) {
 		t.Errorf("expected empty result for unknown email_id, got %d", len(results))
 	}
 }
+
+// ---------------------------------------------------------------------------
+// delete_mail tests (DB-only; IMAP connection is not exercised in unit tests)
+// ---------------------------------------------------------------------------
+
+func TestHandleDeleteMail_NoTrashFolder(t *testing.T) {
+	database := openTestDB(t)
+	cfg := &config.Config{Accounts: []config.AccountConfig{{ID: "acc1"}}} // no TrashFolder
+	seedEntry(t, database, "acc1:INBOX:1", "acc1", "INBOX", "Subject", "s@example.com", 1)
+
+	h := handleDeleteMail(cfg, database)
+	out := callTool(t, h, map[string]any{"email_id": "acc1:INBOX:1"})
+
+	if !strings.Contains(out, "trash_folder") {
+		t.Errorf("expected trash_folder error, got: %s", out)
+	}
+}
+
+func TestHandleDeleteMail_UnknownAccount(t *testing.T) {
+	database := openTestDB(t)
+	cfg := &config.Config{Accounts: []config.AccountConfig{{ID: "acc1", TrashFolder: "Trash"}}}
+
+	h := handleDeleteMail(cfg, database)
+	out := callTool(t, h, map[string]any{"email_id": "unknown:INBOX:1"})
+
+	if !strings.Contains(out, "not found in config") {
+		t.Errorf("expected account-not-found error, got: %s", out)
+	}
+}
+
+func TestHandleDeleteMail_UnknownEmailID(t *testing.T) {
+	database := openTestDB(t)
+	cfg := &config.Config{Accounts: []config.AccountConfig{{ID: "acc1", TrashFolder: "Trash"}}}
+
+	h := handleDeleteMail(cfg, database)
+	out := callTool(t, h, map[string]any{"email_id": "acc1:INBOX:999"})
+
+	if !strings.Contains(out, "not found") {
+		t.Errorf("expected not-found error, got: %s", out)
+	}
+}
+
+func TestHandleDeleteMail_InvalidEmailID(t *testing.T) {
+	database := openTestDB(t)
+	cfg := &config.Config{Accounts: []config.AccountConfig{{ID: "acc1", TrashFolder: "Trash"}}}
+
+	h := handleDeleteMail(cfg, database)
+	out := callTool(t, h, map[string]any{"email_id": "notavalidid"})
+
+	if !strings.Contains(out, "invalid email_id format") {
+		t.Errorf("expected format error, got: %s", out)
+	}
+}

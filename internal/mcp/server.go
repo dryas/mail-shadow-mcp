@@ -5,14 +5,16 @@
 // https://github.com/dryas/mail-shadow-mcp
 //
 // server.go:
-// Wires six MCP tools onto a mark3labs/mcp-go server:
+// Wires seven MCP tools onto a mark3labs/mcp-go server:
 //
 //	list_accounts_and_folders — enumerate synced accounts and folders
 //	get_recent_activity       — N most recent emails, with optional filters
 //	get_email_content         — full body + attachments for a single email
 //	search_emails             — FTS5 full-text search with metadata filters
+//	get_thread                — all emails in a thread via message-id/in-reply-to
 //	download_attachments      — fetch attachment files from IMAP on demand
 //	get_download_link         — generate a temporary HTTP download URL for an attachment (fallback only)
+//	delete_mail               — soft-delete an email by moving it to a configured trash folder via IMAP MOVE
 
 // Package mcpserver wires the MCP tools onto a mark3labs/mcp-go server.
 package mcpserver
@@ -29,9 +31,12 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
+	"github.com/emersion/go-imap/v2"
+
 	"github.com/dryas/mail-shadow-mcp/internal/attachment"
 	"github.com/dryas/mail-shadow-mcp/internal/config"
 	"github.com/dryas/mail-shadow-mcp/internal/fileserver"
+	imapsync "github.com/dryas/mail-shadow-mcp/internal/sync"
 )
 
 // New creates and returns a configured MCP server with all tools registered.
@@ -51,6 +56,7 @@ func New(db *sql.DB, cfg *config.Config, version string, fs *fileserver.Server) 
 	s.AddTool(toolSearchEmails(), handleSearchEmails(db))
 	s.AddTool(toolGetThread(), handleGetThread(db))
 	s.AddTool(toolDownloadAttachments(), handleDownloadAttachments(cfg))
+	s.AddTool(toolDeleteMail(), handleDeleteMail(cfg, db))
 	if fs != nil {
 		s.AddTool(toolGetDownloadLink(), handleGetDownloadLink(cfg, fs))
 	}
@@ -931,5 +937,114 @@ func handleGetThread(db *sql.DB) server.ToolHandlerFunc {
 		}
 		out, _ := json.MarshalIndent(results, "", "  ")
 		return mcp.NewToolResultText(string(out)), nil
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tool: delete_mail
+// ---------------------------------------------------------------------------
+
+func toolDeleteMail() mcp.Tool {
+	return mcp.NewTool("delete_mail",
+		mcp.WithDescription(
+			"Soft-deletes an email by moving it to the configured trash folder on the IMAP server (IMAP MOVE). "+
+				"The email is NOT permanently deleted — it is moved to the trash_folder defined in config.yaml for this account. "+
+				"The local database entry is removed immediately; the moved email will be picked up by the next sync of the trash folder. "+
+				"Returns an error if trash_folder is not configured for the account.",
+		),
+		mcp.WithTitleAnnotation("Delete Mail (Move to Trash)"),
+		mcp.WithReadOnlyHintAnnotation(false),
+		mcp.WithDestructiveHintAnnotation(true),
+		mcp.WithIdempotentHintAnnotation(false),
+		mcp.WithOpenWorldHintAnnotation(true),
+		mcp.WithString("email_id",
+			mcp.Required(),
+			mcp.Description("The email ID in the format 'account:folder:uid' as returned by search_emails or get_recent_activity."),
+		),
+	)
+}
+
+func handleDeleteMail(cfg *config.Config, db *sql.DB) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		emailID, err := req.RequireString("email_id")
+		if err != nil {
+			return mcp.NewToolResultError("email_id is required"), nil
+		}
+		slog.Info("tool called", "tool", "delete_mail", "email_id", emailID)
+
+		// Parse email_id: "account:folder:uid"
+		lastColon := strings.LastIndex(emailID, ":")
+		if lastColon < 0 {
+			return mcp.NewToolResultError(fmt.Sprintf("invalid email_id format (expected account:folder:uid): %q", emailID)), nil
+		}
+		uidStr := emailID[lastColon+1:]
+		remainder := emailID[:lastColon]
+		secondColon := strings.Index(remainder, ":")
+		if secondColon < 0 {
+			return mcp.NewToolResultError(fmt.Sprintf("invalid email_id format (expected account:folder:uid): %q", emailID)), nil
+		}
+		accountID := remainder[:secondColon]
+		folder := remainder[secondColon+1:]
+
+		var uid uint32
+		if _, err := fmt.Sscanf(uidStr, "%d", &uid); err != nil || uid == 0 {
+			return mcp.NewToolResultError(fmt.Sprintf("invalid uid in email_id: %q", uidStr)), nil
+		}
+
+		// Find account config.
+		var acc *config.AccountConfig
+		for i := range cfg.Accounts {
+			if cfg.Accounts[i].ID == accountID {
+				acc = &cfg.Accounts[i]
+				break
+			}
+		}
+		if acc == nil {
+			return mcp.NewToolResultError(fmt.Sprintf("account %q not found in config", accountID)), nil
+		}
+
+		// Require trash_folder to be configured.
+		if acc.TrashFolder == "" {
+			return mcp.NewToolResultError(fmt.Sprintf(
+				"delete_mail is not configured for account %q — set trash_folder in config.yaml", accountID,
+			)), nil
+		}
+
+		// Verify the email exists in the local DB before attempting IMAP operations.
+		var exists int
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM mail_entries WHERE id = ?`, emailID).Scan(&exists); err != nil || exists == 0 {
+			return mcp.NewToolResultError(fmt.Sprintf(
+				"email %q not found — use get_recent_activity or search_emails to get a valid email ID", emailID,
+			)), nil
+		}
+
+		// Open a short-lived IMAP connection and move the message.
+		syncClient, err := imapsync.NewClient(*acc)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("could not connect to IMAP server: %v", err)), nil
+		}
+		defer syncClient.Close()
+		c := syncClient.RawClient()
+
+		if _, err := c.Select(folder, nil).Wait(); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("could not select folder %q: %v", folder, err)), nil
+		}
+
+		var uidSet imap.UIDSet
+		uidSet.AddNum(imap.UID(uid))
+		if _, err := c.Move(uidSet, acc.TrashFolder).Wait(); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("IMAP MOVE failed: %v", err)), nil
+		}
+
+		// Clean up the local DB entry. Order matters: FTS and content first,
+		// then mail_entries (which cascades to mail_attachments).
+		db.ExecContext(ctx, `DELETE FROM mail_content_fts WHERE entry_id = ?`, emailID)
+		db.ExecContext(ctx, `DELETE FROM mail_content WHERE entry_id = ?`, emailID)
+		db.ExecContext(ctx, `DELETE FROM mail_entries WHERE id = ?`, emailID)
+
+		slog.Info("delete_mail: moved to trash", "email_id", emailID, "trash_folder", acc.TrashFolder)
+		return mcp.NewToolResultText(fmt.Sprintf(
+			"Mail %s moved to %q (soft-delete). The email remains on the server in the trash folder.", emailID, acc.TrashFolder,
+		)), nil
 	}
 }

@@ -30,6 +30,8 @@ accounts:
     folders: ["INBOX", "Archive"]   # optional: omit to sync all folders
     # idle_folders: ["INBOX"]       # optional: folders watched via IMAP IDLE for instant new-mail notification
                                     # all folders are still polled on the normal interval regardless
+    # trash_folder: "llm_delete"    # optional: target folder for delete_mail (soft-delete via IMAP MOVE)
+                                    # the mail is NOT deleted — it is moved to this folder on the IMAP server
 
   - id: "personal@example.com"
     host: "imap.example.com"

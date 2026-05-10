@@ -54,6 +54,7 @@ type AccountConfig struct {
 	TLSSkipVerify bool     `yaml:"tls_skip_verify"` // disable certificate verification (e.g. self-signed certs)
 	Folders       []string `yaml:"folders"`         // optional; empty means sync all folders
 	IdleFolders   []string `yaml:"idle_folders"`    // optional; folders watched via IMAP IDLE for instant notification
+	TrashFolder   string   `yaml:"trash_folder"`    // optional; target folder for delete_mail soft-delete (IMAP MOVE)
 }
 
 // Load reads the YAML config file at path, substitutes $ENV_VAR references

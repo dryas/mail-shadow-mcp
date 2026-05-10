@@ -2,7 +2,7 @@
   <img src="img/logo.png" alt="mail-shadow-mcp logo" width="200" />
 </div>
 
-> Structured, read-only email access for AI agents.
+> Structured email access for AI agents — with built-in safety guarantees.
 
 [![Build](https://github.com/dryas/mail-shadow-mcp/actions/workflows/release.yml/badge.svg)](https://github.com/dryas/mail-shadow-mcp/actions/workflows/release.yml)
 [![Latest Release](https://img.shields.io/github/v/release/dryas/mail-shadow-mcp)](https://github.com/dryas/mail-shadow-mcp/releases/latest)
@@ -30,6 +30,20 @@
 - **Thread view** — `get_thread` walks full email conversations via `Message-ID` / `In-Reply-To` headers
 - **Paginated results** — all list tools return `total_count` so agents can page through large result sets
 - **On-demand attachments** — attachment files are fetched from IMAP only when explicitly requested
+- **Safe soft-delete** — when an agent calls `delete_mail`, the MCP server performs an IMAP MOVE to a configurable trash folder; nothing is ever permanently deleted
+
+---
+
+## Safety: Nothing Is Ever Really Deleted
+
+mail-shadow-mcp gives AI agents a `delete_mail` tool, but this tool **never issues a destructive IMAP command**. Here is exactly what happens when an agent calls it:
+
+1. The MCP server looks up the email in the local database.
+2. It opens a short-lived IMAP connection and executes **IMAP MOVE** — moving the message to the `trash_folder` you specify in `config.yaml` (e.g. `"llm_delete"`).
+3. The local database entry is removed so the agent can no longer see the mail in future queries.
+4. The email remains **intact on the IMAP server**, safely tucked away in the trash folder. You can inspect, restore, or permanently delete it yourself at any time.
+
+The AI agent has no direct IMAP access. It cannot expunge messages, empty folders, or issue any write command other than this controlled move. If `trash_folder` is not configured for an account, `delete_mail` returns an error and does nothing.
 
 ---
 
@@ -44,6 +58,7 @@
 | `get_thread` | All emails in the same thread as a given email, sorted by date ascending |
 | `download_attachments` | Fetch attachment files from IMAP and save them to disk |
 | `get_download_link` | Generate a temporary HTTP download URL for attachments (optional fallback) |
+| `delete_mail` | Soft-delete an email by moving it to a configured trash folder (IMAP MOVE, no permanent deletion) |
 
 ---
 
@@ -94,6 +109,7 @@ accounts:
     password: "$WORK_IMAP_PASS"   # or plain text
     folders: ["INBOX", "Archive"] # only sync the mentioned folders
     # idle_folders: ["INBOX"]     # optional: IMAP IDLE for real-time push on these folders
+    # trash_folder: "llm_delete"  # optional: target for delete_mail (soft-delete via IMAP MOVE)
   - id: "private@example.com"
     host: "imap.example.com"
     port: 993
