@@ -6,8 +6,12 @@
 //
 // cmd_serve.go:
 // Implements the "serve" subcommand. Opens the database, runs an initial
-// sync, schedules periodic re-syncs, and starts the MCP server that
-// communicates with the AI agent via stdio/JSON-RPC.
+// sync, schedules periodic re-syncs, and starts the MCP server.
+// Transport mode is controlled by the 'transport' field in config.yaml:
+//
+//	stdio (default) — stdin/stdout, used by Claude Desktop and local tools
+//	http            — StreamableHTTP server, recommended for Docker/remote setups
+//	sse             — legacy SSE transport
 package main
 
 import (
@@ -28,6 +32,31 @@ import (
 	mcpserver "github.com/dryas/mail-shadow-mcp/internal/mcp"
 	imapsync "github.com/dryas/mail-shadow-mcp/internal/sync"
 )
+
+// startMCPServer starts the MCP transport selected by cfg.Transport.
+func startMCPServer(mcpSrv *server.MCPServer, cfg *config.Config) error {
+	addr := cfg.HTTPAddr
+	if addr == "" {
+		addr = ":8080"
+	}
+	switch cfg.Transport {
+	case "", "stdio":
+		slog.Info("MCP transport: stdio")
+		return server.ServeStdio(mcpSrv)
+	case "http":
+		slog.Info("MCP transport: StreamableHTTP", "addr", addr)
+		return server.NewStreamableHTTPServer(mcpSrv).Start(addr)
+	case "sse":
+		baseURL := cfg.HTTPBaseURL
+		if baseURL == "" {
+			baseURL = "http://localhost" + addr
+		}
+		slog.Info("MCP transport: SSE", "addr", addr, "base_url", baseURL)
+		return server.NewSSEServer(mcpSrv, server.WithBaseURL(baseURL)).Start(addr)
+	default:
+		return fmt.Errorf("unknown transport %q — valid values: stdio, http, sse", cfg.Transport)
+	}
+}
 
 func cmdServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
@@ -103,7 +132,7 @@ func cmdServe(args []string) {
 	dlServer := startFileServer(cfg)
 
 	mcpSrv := mcpserver.New(database, cfg, version, dlServer)
-	if err := server.ServeStdio(mcpSrv); err != nil {
+	if err := startMCPServer(mcpSrv, cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "mail-shadow-mcp: server error: %v\n", err)
 		os.Exit(1)
 	}

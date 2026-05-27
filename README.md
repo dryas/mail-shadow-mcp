@@ -110,6 +110,7 @@ accounts:
     folders: ["INBOX", "Archive"] # only sync the mentioned folders
     # idle_folders: ["INBOX"]     # optional: IMAP IDLE for real-time push on these folders
     # trash_folder: "llm_delete"  # optional: target for delete_mail (soft-delete via IMAP MOVE)
+    
   - id: "private@example.com"
     host: "imap.example.com"
     port: 993
@@ -136,6 +137,96 @@ Credentials can be stored as plain text or as `$ENV_VAR` references that are res
 
 # Download attachments for a specific email
 ./mail-shadow-mcp attachments --id "work@example.com:INBOX:42"
+```
+
+---
+
+## Docker
+
+Pre-built multi-architecture images (`linux/amd64`, `linux/arm64`) are published to the GitHub Container Registry on every release:
+
+```bash
+docker pull ghcr.io/dryas/mail-shadow-mcp:latest
+```
+
+### Required volumes
+
+| Volume | Purpose |
+|---|---|
+| `/config` | Must contain `config.yaml`. Mount read-only. |
+| `/data` | Persistent storage for the SQLite database and downloaded attachments. Survives container restarts. |
+
+### Quick Docker run
+
+**Step 1** — prepare a `config.yaml` with `transport: http` and paths pointing to `/data`:
+
+```yaml
+transport: http          # StreamableHTTP — required for Docker
+http_addr: ":8080"
+
+database:
+  path: "/data/mail.db"
+
+attachment_dir: "/data/attachments"
+
+accounts:
+  - id: "work@example.com"
+    host: "imap.example.com"
+    port: 993
+    username: "work@example.com"
+    password: "$WORK_IMAP_PASS"
+```
+
+**Step 2** — run the container:
+
+```bash
+docker run -d \
+  --name mail-shadow-mcp \
+  -v ./config.yaml:/config/config.yaml:ro \
+  -v mail-shadow-data:/data \
+  -p 8080:8080 \
+  ghcr.io/dryas/mail-shadow-mcp:latest
+```
+
+The MCP server is now reachable at `http://localhost:8080/mcp`.
+
+### docker-compose example
+
+```yaml
+services:
+  mail-shadow-mcp:
+    image: ghcr.io/dryas/mail-shadow-mcp:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config.yaml:/config/config.yaml:ro   # your config — mount read-only
+      - mail-shadow-data:/data                 # persistent DB + attachments
+    environment:
+      - WORK_IMAP_PASS=your_password_here      # referenced as $WORK_IMAP_PASS in config
+
+volumes:
+  mail-shadow-data:
+```
+
+### Connecting an AI agent to the Docker container
+
+Point your MCP client at `http://localhost:8080/mcp` using the StreamableHTTP transport:
+
+```json
+{
+  "mcpServers": {
+    "mail_shadow": {
+      "url": "http://localhost:8080/mcp"
+    }
+  }
+}
+```
+
+### Build the image yourself
+
+```bash
+docker build --build-arg VERSION=dev -t mail-shadow-mcp .
 ```
 
 ---

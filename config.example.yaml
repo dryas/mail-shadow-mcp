@@ -10,6 +10,14 @@ attachment_dir: "data/attachments"  # base directory for downloaded attachments
 # log_level: info                        # debug | info (default) | warn | error
 # log_format: text                       # text (default) | json
 
+# MCP transport mode.
+# stdio (default) — stdin/stdout, used by Claude Desktop and most local tools.
+# http            — StreamableHTTP, recommended for Docker and remote deployments.
+# sse             — legacy SSE transport (prefer http unless your client requires SSE).
+# transport: stdio
+# http_addr: ":8080"                      # bind address for http/sse (default: :8080)
+# http_base_url: "http://localhost:8080"  # sse only: externally reachable base URL
+
 # Optional: lightweight HTTP server for temporary attachment download links.
 # Only enable this if you need the get_download_link MCP tool (e.g. as a
 # fallback when the AI agent cannot transfer files via its normal channels).

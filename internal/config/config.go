@@ -34,6 +34,9 @@ type Config struct {
 	LogFile         string          `yaml:"log_file"`           // optional: path to log file; omit to log to stderr
 	LogLevel        string          `yaml:"log_level"`          // debug | info (default) | warn | error
 	LogFormat       string          `yaml:"log_format"`         // text (default) | json
+	Transport       string          `yaml:"transport"`          // stdio (default) | http | sse
+	HTTPAddr        string          `yaml:"http_addr"`          // bind address for http/sse transport (default: ":8080")
+	HTTPBaseURL     string          `yaml:"http_base_url"`      // sse only: externally reachable base URL
 	Accounts        []AccountConfig `yaml:"accounts"`
 }
 
