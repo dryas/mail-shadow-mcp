@@ -209,6 +209,8 @@ volumes:
   mail-shadow-data:
 ```
 
+> **Passwörter als Umgebungsvariablen:** In `config.yaml` kannst du Passwörter als `$ENV_VAR` angeben — der Server löst diese beim Start auf. Übergib sie per `environment:` in docker-compose oder per `-e` bei `docker run`. Dadurch landet kein Klartext-Passwort in der config-Datei.
+
 ### Connecting an AI agent to the Docker container
 
 Point your MCP client at `http://localhost:8080/mcp` using the StreamableHTTP transport:

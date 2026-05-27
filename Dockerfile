@@ -45,6 +45,8 @@ RUN apk add --no-cache ca-certificates tzdata
 
 COPY --from=builder /out/mail-shadow-mcp /usr/local/bin/mail-shadow-mcp
 COPY config.example.yaml /etc/mail-shadow-mcp/config.example.yaml
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # /config  — mount your config.yaml here (read-only recommended)
 # /data    — persistent storage: SQLite DB + downloaded attachments
@@ -54,4 +56,4 @@ EXPOSE 8080
 
 ENV CONFIG_PATH=/config/config.yaml
 
-ENTRYPOINT ["mail-shadow-mcp", "serve"]
+ENTRYPOINT ["docker-entrypoint.sh"]
