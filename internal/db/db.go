@@ -163,5 +163,21 @@ func Migrate(db *sql.DB) error {
 		}
 	}
 
+	// Data migration: normalise legacy date_utc values written by old builds.
+	// Before this fix, time.Time was passed directly to the modernc/sqlite driver,
+	// which stored it in Go's default format "2006-01-02 15:04:05 +0000 UTC".
+	// That format breaks >= / <= comparisons against RFC3339 strings because
+	// space (0x20) < 'T' (0x54) lexicographically.
+	// We convert all such rows to "YYYY-MM-DDTHH:MM:SSZ" in-place.
+	// The LIKE pattern matches the old format; already-correct RFC3339 rows
+	// contain a 'T' at position 11 and are not matched.
+	if res, err := db.Exec(`UPDATE mail_entries
+		SET date_utc = replace(substr(date_utc, 1, 19), ' ', 'T') || 'Z'
+		WHERE date_utc LIKE '____-__-__ __%'`); err != nil {
+		return fmt.Errorf("db: date_utc normalisation failed: %w", err)
+	} else if n, _ := res.RowsAffected(); n > 0 {
+		slog.Info("db: normalised legacy date_utc values", "rows", n)
+	}
+
 	return nil
 }

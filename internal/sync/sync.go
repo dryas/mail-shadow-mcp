@@ -659,7 +659,11 @@ func buildEntry(accountID, folder string, uid uint32, msg *imapclient.FetchMessa
 
 	var dateUTC any
 	if !env.Date.IsZero() {
-		dateUTC = env.Date.UTC()
+		// Store as RFC3339 string so SQLite string comparisons work correctly.
+		// Passing time.Time directly causes the driver to store Go's default
+		// "2006-01-02 15:04:05 +0000 UTC" format, which breaks >= / <= filters
+		// against RFC3339 strings (space 0x20 < 'T' 0x54 lexicographically).
+		dateUTC = env.Date.UTC().Format(time.RFC3339)
 	}
 
 	isRead, isReplied := flagInts(msg.Flags)

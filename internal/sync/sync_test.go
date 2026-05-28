@@ -102,7 +102,7 @@ func TestInsertEntry_NoDuplicate(t *testing.T) {
 		IMAPFolder: "INBOX",
 		Subject:    "Hello World",
 		Sender:     "sender@example.com",
-		DateUTC:    time.Now().UTC(),
+		DateUTC:    time.Now().UTC().Format(time.RFC3339),
 	}
 
 	tx, err := database.Begin()
@@ -169,12 +169,12 @@ func TestBuildEntry_Fields(t *testing.T) {
 	if entry.RecipientsCC != "cc@example.com" {
 		t.Errorf("RecipientsCC: got %q", entry.RecipientsCC)
 	}
-	dt, ok := entry.DateUTC.(time.Time)
+	dt, ok := entry.DateUTC.(string)
 	if !ok {
-		t.Fatalf("DateUTC is not time.Time")
+		t.Fatalf("DateUTC is not string (got %T)", entry.DateUTC)
 	}
-	if !dt.Equal(now) {
-		t.Errorf("DateUTC: want %v, got %v", now, dt)
+	if dt != now.UTC().Format(time.RFC3339) {
+		t.Errorf("DateUTC: want %v, got %v", now.UTC().Format(time.RFC3339), dt)
 	}
 }
 
