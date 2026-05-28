@@ -21,11 +21,19 @@ type AccountResult struct {
 	Err       error
 }
 
-// accountLocks prevents concurrent syncs for the same account.
-// If a sync is already running when the ticker fires, the new run is skipped.
+// accountLocks prevents concurrent RunAll calls for the same account.
+// If a full account sync is already running when the ticker fires, the new run is skipped.
+//
+// folderLocks prevents concurrent syncs of the same account+folder pair.
+// This is important during the initial import: RunAll and the IDLE initial sync
+// could otherwise both start fetching the same folder from UID 0, writing every
+// message twice. Callers use TryLock and skip the folder when it is busy.
 var (
 	accountLocksMu sync.Mutex
 	accountLocks   = map[string]*sync.Mutex{}
+
+	folderLocksMu sync.Mutex
+	folderLocks   = map[string]*sync.Mutex{}
 )
 
 func accountMutex(id string) *sync.Mutex {
@@ -35,6 +43,17 @@ func accountMutex(id string) *sync.Mutex {
 		accountLocks[id] = &sync.Mutex{}
 	}
 	return accountLocks[id]
+}
+
+// folderMutex returns the mutex for a specific account+folder pair.
+func folderMutex(accountID, folder string) *sync.Mutex {
+	key := accountID + "\x00" + folder
+	folderLocksMu.Lock()
+	defer folderLocksMu.Unlock()
+	if _, ok := folderLocks[key]; !ok {
+		folderLocks[key] = &sync.Mutex{}
+	}
+	return folderLocks[key]
 }
 
 // RunAll syncs every account in the config concurrently.
@@ -102,7 +121,14 @@ func syncAccount(accCfg config.AccountConfig, db *sql.DB) error {
 	var errs []error
 	for i, folder := range folders {
 		logger.Info("syncing folder", "folder", folder, "progress", fmt.Sprintf("%d/%d", i+1, len(folders)))
-		if err := client.SyncFolder(db, folder); err != nil {
+		fmu := folderMutex(accCfg.ID, folder)
+		if !fmu.TryLock() {
+			logger.Warn("folder sync already running, skipping", "folder", folder)
+			continue
+		}
+		err := client.SyncFolder(db, folder)
+		fmu.Unlock()
+		if err != nil {
 			logger.Error("folder sync failed", "folder", folder, "err", err)
 			errs = append(errs, fmt.Errorf("folder %q: %w", folder, err))
 		}
@@ -249,7 +275,16 @@ func runIdleSession(accCfg config.AccountConfig, folder string, cfg *config.Conf
 // syncOneFolder opens a fresh IMAP connection, syncs a single folder and
 // closes the connection. Used by the IDLE path to avoid blocking the dedicated
 // IDLE connection with heavy fetch operations.
+// If the folder is already being synced (e.g. by RunAll during initial import)
+// this call is a no-op to prevent double-importing.
 func syncOneFolder(accCfg config.AccountConfig, folder string, db *sql.DB) error {
+	fmu := folderMutex(accCfg.ID, folder)
+	if !fmu.TryLock() {
+		slog.Info("IDLE: folder sync already running, skipping", "account", accCfg.ID, "folder", folder)
+		return nil
+	}
+	defer fmu.Unlock()
+
 	client, err := NewClient(accCfg)
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
