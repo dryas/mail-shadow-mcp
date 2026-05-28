@@ -163,8 +163,9 @@ docker pull ghcr.io/dryas/mail-shadow-mcp:latest
 **Step 1** — prepare a `config.yaml` with `transport: http` and paths pointing to `/data`:
 
 ```yaml
-transport: http          # StreamableHTTP — required for Docker
+transport: http
 http_addr: ":8080"
+http_bearer_token: "your-secret-token"   # see below for how to generate one
 
 database:
   path: "/data/mail.db"
@@ -213,6 +214,33 @@ volumes:
 
 > **Passwörter als Umgebungsvariablen:** In `config.yaml` kannst du Passwörter als `$ENV_VAR` angeben — der Server löst diese beim Start auf. Übergib sie per `environment:` in docker-compose oder per `-e` bei `docker run`. Dadurch landet kein Klartext-Passwort in der config-Datei.
 
+### Authentication (Bearer Token)
+
+When using `http` or `sse` transport, **always set `http_bearer_token`** — otherwise the MCP endpoint is reachable by anyone who can access the port.
+
+Generate a cryptographically secure token:
+
+```bash
+# Linux / macOS / WSL
+openssl rand -hex 32
+
+# PowerShell
+[System.Convert]::ToBase64String((1..32 | ForEach-Object { [byte](Get-Random -Max 256) }))
+```
+
+Set it in your `config.yaml`:
+
+```yaml
+http_bearer_token: "a3f1c2e8b4d9..."   # paste your generated token here
+```
+
+Every request to the MCP endpoint must then include the header:
+```
+Authorization: Bearer a3f1c2e8b4d9...
+```
+
+Most MCP clients (Claude Desktop, Cursor, etc.) support Bearer auth natively — see the connection example below.
+
 ### Connecting an AI agent to the Docker container
 
 Point your MCP client at `http://localhost:8080/mcp` using the StreamableHTTP transport:
@@ -221,7 +249,10 @@ Point your MCP client at `http://localhost:8080/mcp` using the StreamableHTTP tr
 {
   "mcpServers": {
     "mail_shadow": {
-      "url": "http://localhost:8080/mcp"
+      "url": "http://localhost:8080/mcp",
+      "headers": {
+        "Authorization": "Bearer your-secret-token"
+      }
     }
   }
 }

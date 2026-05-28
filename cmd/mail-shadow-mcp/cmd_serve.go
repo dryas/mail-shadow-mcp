@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"time"
@@ -44,18 +45,37 @@ func startMCPServer(mcpSrv *server.MCPServer, cfg *config.Config) error {
 		slog.Info("MCP transport: stdio")
 		return server.ServeStdio(mcpSrv)
 	case "http":
-		slog.Info("MCP transport: StreamableHTTP", "addr", addr)
-		return server.NewStreamableHTTPServer(mcpSrv).Start(addr)
+		slog.Info("MCP transport: StreamableHTTP", "addr", addr, "auth", cfg.HTTPBearerToken != "")
+		handler := withBearer(cfg.HTTPBearerToken, server.NewStreamableHTTPServer(mcpSrv))
+		return http.ListenAndServe(addr, handler)
 	case "sse":
 		baseURL := cfg.HTTPBaseURL
 		if baseURL == "" {
 			baseURL = "http://localhost" + addr
 		}
-		slog.Info("MCP transport: SSE", "addr", addr, "base_url", baseURL)
-		return server.NewSSEServer(mcpSrv, server.WithBaseURL(baseURL)).Start(addr)
+		slog.Info("MCP transport: SSE", "addr", addr, "base_url", baseURL, "auth", cfg.HTTPBearerToken != "")
+		handler := withBearer(cfg.HTTPBearerToken, server.NewSSEServer(mcpSrv, server.WithBaseURL(baseURL)))
+		return http.ListenAndServe(addr, handler)
 	default:
 		return fmt.Errorf("unknown transport %q — valid values: stdio, http, sse", cfg.Transport)
 	}
+}
+
+// withBearer wraps an http.Handler with Bearer token authentication.
+// If token is empty the handler is returned unwrapped (no auth).
+func withBearer(token string, next http.Handler) http.Handler {
+	if token == "" {
+		return next
+	}
+	expected := "Bearer " + token
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != expected {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="mail-shadow-mcp"`)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func cmdServe(args []string) {

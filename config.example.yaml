@@ -17,6 +17,8 @@ attachment_dir: "data/attachments"  # base directory for downloaded attachments
 # transport: stdio
 # http_addr: ":8080"                      # bind address for http/sse (default: :8080)
 # http_base_url: "http://localhost:8080"  # sse only: externally reachable base URL
+# http_bearer_token: ""                  # recommended: set a secret token to protect the HTTP endpoint
+                                         # generate one with: openssl rand -hex 32
 
 # Optional: lightweight HTTP server for temporary attachment download links.
 # Only enable this if you need the get_download_link MCP tool (e.g. as a

@@ -37,6 +37,7 @@ type Config struct {
 	Transport       string          `yaml:"transport"`          // stdio (default) | http | sse
 	HTTPAddr        string          `yaml:"http_addr"`          // bind address for http/sse transport (default: ":8080")
 	HTTPBaseURL     string          `yaml:"http_base_url"`      // sse only: externally reachable base URL
+	HTTPBearerToken string          `yaml:"http_bearer_token"`  // optional: require this Bearer token on all http/sse requests
 	Accounts        []AccountConfig `yaml:"accounts"`
 }
 
