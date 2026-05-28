@@ -31,6 +31,8 @@
 - **Paginated results** — all list tools return `total_count` so agents can page through large result sets
 - **On-demand attachments** — attachment files are fetched from IMAP only when explicitly requested
 - **Safe soft-delete** — when an agent calls `delete_mail`, the MCP server performs an IMAP MOVE to a configurable trash folder; nothing is ever permanently deleted
+- **Flexible transport** — `stdio` for local tools (Claude Desktop), `http` (StreamableHTTP) or `sse` for remote and Docker deployments
+- **Docker-ready** — official multi-arch image (`linux/amd64`, `linux/arm64`) published to `ghcr.io` on every release
 
 ---
 
