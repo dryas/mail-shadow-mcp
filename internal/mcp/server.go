@@ -65,6 +65,16 @@ func New(db *sql.DB, cfg *config.Config, version string, fs *fileserver.Server) 
 }
 
 // ---------------------------------------------------------------------------
+// normalizeDateTo expands a plain YYYY-MM-DD date_to value to the end of that day
+// so that same-day messages are included in the filter.
+// "2026-05-28" → "2026-05-28T23:59:59Z"  (RFC3339 values are returned unchanged)
+func normalizeDateTo(v string) string {
+	if len(v) == 10 { // "2006-01-02"
+		return v + "T23:59:59Z"
+	}
+	return v
+}
+
 // validateDate checks that a date string is parseable as RFC3339 or YYYY-MM-DD.
 // Returns a human-readable error string, or "" if valid or empty.
 func validateDate(param, value string) string {
@@ -193,6 +203,9 @@ func handleListAccountsAndFolders(db *sql.DB, cfg *config.Config) server.ToolHan
 				byAccount[aid] = &accountInfo{AccountID: aid}
 			}
 			byAccount[aid].Folders = append(byAccount[aid].Folders, folderInfo{Folder: folder})
+		}
+		if err := rows.Err(); err != nil {
+			slog.Warn("list_accounts_and_folders: row iteration error", "err", err)
 		}
 
 		// Add accounts from config that have no sync state yet.
@@ -329,16 +342,15 @@ func handleGetRecentActivity(db *sql.DB) server.ToolHandlerFunc {
 		var results []mailSummary
 		for rows.Next() {
 			var m mailSummary
-			var rawDate sql.NullTime
+			var rawDateStr sql.NullString
 			var rawIsRead, rawIsReplied sql.NullInt64
 			var attJSON string
-			if err := rows.Scan(&m.ID, &m.AccountID, &m.Folder, &m.Subject, &m.Sender, &m.RecipientsTo, &rawDate, &rawIsRead, &rawIsReplied, &attJSON); err != nil {
+			if err := rows.Scan(&m.ID, &m.AccountID, &m.Folder, &m.Subject, &m.Sender, &m.RecipientsTo, &rawDateStr, &rawIsRead, &rawIsReplied, &attJSON); err != nil {
 				slog.Warn("get_recent_activity: row scan failed", "err", err)
 				continue
 			}
-			if rawDate.Valid {
-				s := rawDate.Time.UTC().Format(time.RFC3339)
-				m.DateUTC = &s
+			if rawDateStr.Valid && rawDateStr.String != "" {
+				m.DateUTC = &rawDateStr.String
 			}
 			if rawIsRead.Valid {
 				v := rawIsRead.Int64 != 0
@@ -352,6 +364,9 @@ func handleGetRecentActivity(db *sql.DB) server.ToolHandlerFunc {
 				m.Attachments = []attachmentDetail{}
 			}
 			results = append(results, m)
+		}
+		if err := rows.Err(); err != nil {
+			slog.Warn("get_recent_activity: row iteration error", "err", err)
 		}
 
 		var total int
@@ -412,7 +427,7 @@ func handleGetEmailContent(db *sql.DB) server.ToolHandlerFunc {
 		slog.Info("tool called", "tool", "get_email_content", "entry_id", entryID)
 
 		var m mailDetail
-		var rawDate sql.NullTime
+		var rawDateStr sql.NullString
 		var rawIsRead, rawIsReplied sql.NullInt64
 		err = db.QueryRowContext(ctx, `
 			SELECT e.id, e.account_id, e.imap_folder, e.subject, e.sender,
@@ -422,7 +437,7 @@ func handleGetEmailContent(db *sql.DB) server.ToolHandlerFunc {
 			WHERE e.id = ?`, entryID,
 		).Scan(
 			&m.ID, &m.AccountID, &m.Folder, &m.Subject, &m.Sender,
-			&m.RecipientsTo, &m.RecipientsCC, &rawDate, &rawIsRead, &rawIsReplied,
+			&m.RecipientsTo, &m.RecipientsCC, &rawDateStr, &rawIsRead, &rawIsReplied,
 			&m.BodyText,
 		)
 		if err == sql.ErrNoRows {
@@ -431,9 +446,8 @@ func handleGetEmailContent(db *sql.DB) server.ToolHandlerFunc {
 		if err != nil {
 			return mcp.NewToolResultError(fmtDBError(err)), nil
 		}
-		if rawDate.Valid {
-			s := rawDate.Time.UTC().Format(time.RFC3339)
-			m.DateUTC = &s
+		if rawDateStr.Valid && rawDateStr.String != "" {
+			m.DateUTC = &rawDateStr.String
 		}
 		if rawIsRead.Valid {
 			v := rawIsRead.Int64 != 0
@@ -460,6 +474,9 @@ func handleGetEmailContent(db *sql.DB) server.ToolHandlerFunc {
 					continue
 				}
 				m.Attachments = append(m.Attachments, a)
+			}
+			if err := attRows.Err(); err != nil {
+				slog.Warn("get_email_content: attachment row iteration error", "err", err)
 			}
 		}
 		if m.Attachments == nil {
@@ -605,7 +622,8 @@ func buildSearchQuery(p searchParams) *queryBuilder {
 		qb.and("e.date_utc >= ?", p.dateFrom)
 	}
 	if p.dateTo != "" {
-		qb.and("e.date_utc <= ?", p.dateTo)
+		// Normalize plain YYYY-MM-DD to end-of-day so same-day emails are included.
+		qb.and("e.date_utc <= ?", normalizeDateTo(p.dateTo))
 	}
 	if p.folder != "" {
 		qb.and("e.imap_folder = ?", p.folder)
@@ -689,6 +707,9 @@ func handleSearchEmails(db *sql.DB) server.ToolHandlerFunc {
 				m.Attachments = []attachmentDetail{}
 			}
 			results = append(results, m)
+		}
+		if err := rows.Err(); err != nil {
+			slog.Warn("search_emails: row iteration error", "err", err)
 		}
 
 		var total int
@@ -908,16 +929,15 @@ func handleGetThread(db *sql.DB) server.ToolHandlerFunc {
 		var results []mailSummary
 		for rows.Next() {
 			var m mailSummary
-			var rawDate sql.NullTime
+			var rawDateStr sql.NullString
 			var rawIsRead, rawIsReplied sql.NullInt64
 			var attJSON string
-			if err := rows.Scan(&m.ID, &m.AccountID, &m.Folder, &m.Subject, &m.Sender, &m.RecipientsTo, &rawDate, &rawIsRead, &rawIsReplied, &attJSON); err != nil {
+			if err := rows.Scan(&m.ID, &m.AccountID, &m.Folder, &m.Subject, &m.Sender, &m.RecipientsTo, &rawDateStr, &rawIsRead, &rawIsReplied, &attJSON); err != nil {
 				slog.Warn("get_thread: row scan failed", "err", err)
 				continue
 			}
-			if rawDate.Valid {
-				s := rawDate.Time.UTC().Format(time.RFC3339)
-				m.DateUTC = &s
+			if rawDateStr.Valid && rawDateStr.String != "" {
+				m.DateUTC = &rawDateStr.String
 			}
 			if rawIsRead.Valid {
 				v := rawIsRead.Int64 != 0
@@ -931,6 +951,9 @@ func handleGetThread(db *sql.DB) server.ToolHandlerFunc {
 				m.Attachments = []attachmentDetail{}
 			}
 			results = append(results, m)
+		}
+		if err := rows.Err(); err != nil {
+			slog.Warn("get_thread: row iteration error", "err", err)
 		}
 		if results == nil {
 			results = []mailSummary{}
@@ -1038,9 +1061,15 @@ func handleDeleteMail(cfg *config.Config, db *sql.DB) server.ToolHandlerFunc {
 
 		// Clean up the local DB entry. Order matters: FTS and content first,
 		// then mail_entries (which cascades to mail_attachments).
-		db.ExecContext(ctx, `DELETE FROM mail_content_fts WHERE entry_id = ?`, emailID)
-		db.ExecContext(ctx, `DELETE FROM mail_content WHERE entry_id = ?`, emailID)
-		db.ExecContext(ctx, `DELETE FROM mail_entries WHERE id = ?`, emailID)
+		if _, err := db.ExecContext(ctx, `DELETE FROM mail_content_fts WHERE entry_id = ?`, emailID); err != nil {
+			slog.Warn("delete_mail: failed to remove FTS entry", "email_id", emailID, "err", err)
+		}
+		if _, err := db.ExecContext(ctx, `DELETE FROM mail_content WHERE entry_id = ?`, emailID); err != nil {
+			slog.Warn("delete_mail: failed to remove content entry", "email_id", emailID, "err", err)
+		}
+		if _, err := db.ExecContext(ctx, `DELETE FROM mail_entries WHERE id = ?`, emailID); err != nil {
+			slog.Warn("delete_mail: failed to remove mail entry", "email_id", emailID, "err", err)
+		}
 
 		slog.Info("delete_mail: moved to trash", "email_id", emailID, "trash_folder", acc.TrashFolder)
 		return mcp.NewToolResultText(fmt.Sprintf(

@@ -174,8 +174,17 @@ func (c *Client) SyncFolder(db *sql.DB, folder string) error {
 
 	// Disable FTS5 auto-merge during bulk import — dramatically faster for large
 	// batches. We'll run a manual optimize() at the end instead.
+	// Use defer to guarantee re-enabling even if we return early on error.
 	if _, err := db.Exec(`INSERT INTO mail_content_fts(mail_content_fts, rank) VALUES('automerge', 0)`); err != nil {
 		logger.Warn("could not disable FTS automerge", "err", err)
+	} else {
+		defer func() {
+			// Re-enable automerge unless optimizeFTS already did so (it runs on success).
+			// The INSERT is idempotent — running it twice is harmless.
+			if _, err := db.Exec(`INSERT INTO mail_content_fts(mail_content_fts, rank) VALUES('automerge', 8)`); err != nil {
+				logger.Warn("could not re-enable FTS automerge (deferred)", "err", err)
+			}
+		}()
 	}
 
 	const batchSize = 500
