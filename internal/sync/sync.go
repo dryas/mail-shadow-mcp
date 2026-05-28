@@ -110,6 +110,7 @@ func (c *Client) ListFolders() ([]string, error) {
 // SyncFolder incrementally syncs one IMAP folder into the database.
 // It fetches only messages with UIDs greater than the stored last_uid,
 // writes them to mail_entries, and updates sync_state on success.
+// Messages are processed in streaming batches of 500 to bound memory usage.
 // IMPORTANT: Only read commands (SELECT, UID FETCH) are issued — never
 // APPEND, STORE, COPY, EXPUNGE or any other write command.
 func (c *Client) SyncFolder(db *sql.DB, folder string) error {
@@ -138,11 +139,29 @@ func (c *Client) SyncFolder(db *sql.DB, folder string) error {
 		return nil
 	}
 
-	msgs, err := c.fetchNewMessages(logger, lastUID, int(selData.NumMessages))
-	if err != nil {
-		return err
+	// Open the IMAP FETCH stream without buffering the whole result set.
+	// We process messages in batches of 500 so that memory usage is bounded
+	// regardless of mailbox size.
+	var uidSet imap.UIDSet
+	uidSet.AddRange(imap.UID(lastUID+1), 0) // 0 means "*" (highest UID)
+
+	fetchOptions := &imap.FetchOptions{
+		UID:           true,
+		Envelope:      true,
+		InternalDate:  true,
+		Flags:         true,
+		BodyStructure: &imap.FetchItemBodyStructure{Extended: true},
+		BodySection: []*imap.FetchItemBodySection{
+			{Specifier: imap.PartSpecifierText, Peek: true},
+		},
 	}
-	if len(msgs) == 0 {
+
+	fetchCmd := c.client.Fetch(uidSet, fetchOptions)
+
+	// Peek at the first message to decide if there is anything to do.
+	firstMsg := fetchCmd.Next()
+	if firstMsg == nil {
+		fetchCmd.Close() //nolint:errcheck
 		logger.Info("folder up to date, no new messages")
 		if err := c.backfillFlags(db, logger, folder); err != nil {
 			logger.Warn("flag backfill failed", "err", err)
@@ -153,9 +172,6 @@ func (c *Client) SyncFolder(db *sql.DB, folder string) error {
 		return nil
 	}
 
-	total := len(msgs)
-	logger.Info("fetch complete, starting import", "new_messages", total)
-
 	// Disable FTS5 auto-merge during bulk import — dramatically faster for large
 	// batches. We'll run a manual optimize() at the end instead.
 	if _, err := db.Exec(`INSERT INTO mail_content_fts(mail_content_fts, rank) VALUES('automerge', 0)`); err != nil {
@@ -163,22 +179,76 @@ func (c *Client) SyncFolder(db *sql.DB, folder string) error {
 	}
 
 	const batchSize = 500
-	var totalMaxUID uint32
-	for batchStart := 0; batchStart < total; batchStart += batchSize {
-		batchEnd := batchStart + batchSize
-		if batchEnd > total {
-			batchEnd = total
+	expected := int(selData.NumMessages)
+	var totalImported, totalMaxUID uint32
+	var batch []*imapclient.FetchMessageBuffer
+	fetchWindowStart := time.Now()
+
+	// Re-queue the first message we already peeked at.
+	flushBatch := func() error {
+		if len(batch) == 0 {
+			return nil
 		}
-		batchMax, err := c.importMessageBatch(db, logger, folder, msgs[batchStart:batchEnd], batchStart, total)
+		batchMax, err := c.importMessageBatch(db, logger, folder, batch, int(totalImported), expected)
 		if err != nil {
 			return err
 		}
 		if batchMax > totalMaxUID {
 			totalMaxUID = batchMax
 		}
+		totalImported += uint32(len(batch))
+		batch = batch[:0]
+		return nil
 	}
 
-	logger.Info("sync complete, optimizing FTS index...", "new_messages", total, "max_uid", totalMaxUID)
+	for msg := firstMsg; msg != nil; msg = fetchCmd.Next() {
+		buf, err := msg.Collect()
+		if err != nil {
+			logger.Warn("fetch error, skipping message", "received_so_far", totalImported+uint32(len(batch)), "err", err)
+			continue
+		}
+		batch = append(batch, buf)
+
+		if n := totalImported + uint32(len(batch)); n%50 == 0 {
+			logger.Info("fetching...",
+				"received", n,
+				"mailbox_total", expected,
+				"last_50_ms", time.Since(fetchWindowStart).Milliseconds(),
+			)
+			fetchWindowStart = time.Now()
+		}
+
+		if len(batch) >= batchSize {
+			if err := flushBatch(); err != nil {
+				fetchCmd.Close() //nolint:errcheck
+				return err
+			}
+		}
+	}
+
+	if err := fetchCmd.Close(); err != nil {
+		if !strings.Contains(err.Error(), "NO") && !strings.Contains(err.Error(), "BAD") {
+			logger.Warn("fetch close error", "err", err)
+		}
+	}
+
+	// Flush any remaining messages that didn't fill a full batch.
+	if err := flushBatch(); err != nil {
+		return err
+	}
+
+	if totalImported == 0 {
+		logger.Info("folder up to date, no new messages")
+		if err := c.backfillFlags(db, logger, folder); err != nil {
+			logger.Warn("flag backfill failed", "err", err)
+		}
+		if err := c.backfillEnvelope(db, logger, folder); err != nil {
+			logger.Warn("envelope backfill failed", "err", err)
+		}
+		return nil
+	}
+
+	logger.Info("sync complete, optimizing FTS index...", "new_messages", totalImported, "max_uid", totalMaxUID)
 	persistUIDValidity(db, logger, c.cfg.ID, folder, uint32(selData.UIDValidity))
 	optimizeFTS(db, logger)
 	if err := c.backfillFlags(db, logger, folder); err != nil {
@@ -187,7 +257,7 @@ func (c *Client) SyncFolder(db *sql.DB, folder string) error {
 	if err := c.backfillEnvelope(db, logger, folder); err != nil {
 		logger.Warn("envelope backfill failed", "err", err)
 	}
-	logger.Info("sync complete", "new_messages", total, "max_uid", totalMaxUID)
+	logger.Info("sync complete", "new_messages", totalImported, "max_uid", totalMaxUID)
 	return nil
 }
 
@@ -219,58 +289,6 @@ func checkAndResetUIDValidity(db *sql.DB, logger *slog.Logger, accountID, folder
 		return 0, fmt.Errorf("sync: reset sync_state: %w", err)
 	}
 	return 0, nil
-}
-
-// fetchNewMessages streams all messages with UID > lastUID from the server.
-func (c *Client) fetchNewMessages(logger *slog.Logger, lastUID uint32, expected int) ([]*imapclient.FetchMessageBuffer, error) {
-	var uidSet imap.UIDSet
-	uidSet.AddRange(imap.UID(lastUID+1), 0) // 0 means "*" (highest UID)
-
-	fetchOptions := &imap.FetchOptions{
-		UID:           true,
-		Envelope:      true,
-		InternalDate:  true,
-		Flags:         true,
-		BodyStructure: &imap.FetchItemBodyStructure{Extended: true},
-		// Peek: fetch full body text without marking messages as \Seen on the server.
-		BodySection: []*imap.FetchItemBodySection{
-			{Specifier: imap.PartSpecifierText, Peek: true},
-		},
-	}
-
-	fetchCmd := c.client.Fetch(uidSet, fetchOptions)
-	defer fetchCmd.Close()
-
-	const progressInterval = 50
-	var msgs []*imapclient.FetchMessageBuffer
-	fetchWindowStart := time.Now()
-	for {
-		msg := fetchCmd.Next()
-		if msg == nil {
-			break
-		}
-		buf, err := msg.Collect()
-		if err != nil {
-			logger.Warn("fetch error, aborting batch", "received_so_far", len(msgs), "err", err)
-			break
-		}
-		msgs = append(msgs, buf)
-		if n := len(msgs); n%progressInterval == 0 {
-			logger.Info("fetching...",
-				"received", n,
-				"mailbox_total", expected,
-				"last_50_ms", time.Since(fetchWindowStart).Milliseconds(),
-			)
-			fetchWindowStart = time.Now()
-		}
-	}
-	if err := fetchCmd.Close(); err != nil {
-		if strings.Contains(err.Error(), "NO") || strings.Contains(err.Error(), "BAD") {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("sync: fetch envelopes: %w", err)
-	}
-	return msgs, nil
 }
 
 // importMessageBatch writes one slice of fetched messages into a single DB transaction.
