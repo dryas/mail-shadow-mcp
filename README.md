@@ -212,7 +212,7 @@ volumes:
   mail-shadow-data:
 ```
 
-> **Passwörter als Umgebungsvariablen:** In `config.yaml` kannst du Passwörter als `$ENV_VAR` angeben — der Server löst diese beim Start auf. Übergib sie per `environment:` in docker-compose oder per `-e` bei `docker run`. Dadurch landet kein Klartext-Passwort in der config-Datei.
+> **Passwords as environment variables:** In `config.yaml` you can reference passwords as `$ENV_VAR` — the server resolves them at startup. Pass them via `environment:` in docker-compose or via `-e` with `docker run`. This way no plaintext password ends up in the config file.
 
 ### Authentication (Bearer Token)
 
