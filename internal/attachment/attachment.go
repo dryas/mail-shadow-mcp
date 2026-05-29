@@ -109,9 +109,13 @@ func prepareIMAPForEmail(acc config.AccountConfig, folder string, uid uint32) (*
 		BodyStructure: &imap.FetchItemBodyStructure{Extended: true},
 	})
 	msgs, err := structCmd.Collect()
-	if err != nil || len(msgs) == 0 {
+	if err != nil {
 		syncClient.Close()
 		return nil, nil, imap.UIDSet{}, nil, fmt.Errorf("attachment: fetch bodystructure uid=%d: %w", uid, err)
+	}
+	if len(msgs) == 0 {
+		syncClient.Close()
+		return nil, nil, imap.UIDSet{}, nil, fmt.Errorf("attachment: message uid=%d not found on server", uid)
 	}
 	parts := collectAttachmentParts(msgs[0].BodyStructure)
 	return syncClient, c, uidSet, parts, nil
