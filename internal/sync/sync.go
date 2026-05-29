@@ -473,7 +473,7 @@ func (c *Client) backfillFlags(db *sql.DB, logger *slog.Logger, folder string) e
 	if len(uids) == 0 {
 		return nil
 	}
-	logger.Info("flag backfill needed", "folder", folder, "count", len(uids))
+	logger.Info("flag backfill needed", "count", len(uids))
 
 	for start := 0; start < len(uids); start += batchSize {
 		end := start + batchSize
@@ -538,7 +538,7 @@ func (c *Client) backfillFlags(db *sql.DB, logger *slog.Logger, folder string) e
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("backfillFlags: commit: %w", err)
 		}
-		logger.Info("flag backfill batch done", "folder", folder, "uids_in_batch", len(batch), "flags_received", len(results))
+		logger.Info("flag backfill batch done", "uids_in_batch", len(batch), "flags_received", len(results))
 	}
 	return nil
 }
@@ -575,7 +575,7 @@ func (c *Client) backfillEnvelope(db *sql.DB, logger *slog.Logger, folder string
 		return nil
 	}
 	logger.Info("envelope backfill needed — fetching message-id/in-reply-to for existing mails (this may take a while)",
-		"folder", folder, "count", len(uids))
+		"count", len(uids))
 
 	total := len(uids)
 	for start := 0; start < total; start += batchSize {
@@ -591,12 +591,24 @@ func (c *Client) backfillEnvelope(db *sql.DB, logger *slog.Logger, folder string
 		}
 
 		fetchCmd := c.client.Fetch(uidSet, &imap.FetchOptions{UID: true, Envelope: true})
+		// Use string (not *string) so that empty values write "" instead of NULL.
+		// The backfill query selects WHERE message_id IS NULL; writing "" marks a row
+		// as "processed" even when the mail has no Message-ID header, preventing the
+		// backfill from running again on every restart for those messages.
 		type envResult struct {
 			uid       uint32
-			msgID     *string
-			inReplyTo *string
+			msgID     string
+			inReplyTo string
 		}
-		var results []envResult
+		// Pre-populate results with empty strings for every UID in the batch.
+		// If IMAP doesn't return a message (e.g. expunged), the row is still marked
+		// as processed so it doesn't trigger the backfill again.
+		uidToIdx := make(map[uint32]int, len(batch))
+		results := make([]envResult, len(batch))
+		for i, uid := range batch {
+			results[i] = envResult{uid: uid}
+			uidToIdx[uid] = i
+		}
 		for {
 			msg := fetchCmd.Next()
 			if msg == nil {
@@ -610,11 +622,10 @@ func (c *Client) backfillEnvelope(db *sql.DB, logger *slog.Logger, folder string
 			if buf.Envelope == nil {
 				continue
 			}
-			results = append(results, envResult{
-				uid:       uint32(buf.UID),
-				msgID:     nullableString(strings.TrimSpace(buf.Envelope.MessageID)),
-				inReplyTo: nullableString(strings.TrimSpace(strings.Join(buf.Envelope.InReplyTo, " "))),
-			})
+			if idx, ok := uidToIdx[uint32(buf.UID)]; ok {
+				results[idx].msgID = strings.TrimSpace(buf.Envelope.MessageID)
+				results[idx].inReplyTo = strings.TrimSpace(strings.Join(buf.Envelope.InReplyTo, " "))
+			}
 		}
 		if err := fetchCmd.Close(); err != nil {
 			logger.Warn("backfillEnvelope: fetch close error", "err", err)
@@ -639,7 +650,6 @@ func (c *Client) backfillEnvelope(db *sql.DB, logger *slog.Logger, folder string
 			return fmt.Errorf("backfillEnvelope: commit: %w", err)
 		}
 		logger.Info("envelope backfill batch done",
-			"folder", folder,
 			"processed", end,
 			"total", total,
 			"percent", end*100/total,
