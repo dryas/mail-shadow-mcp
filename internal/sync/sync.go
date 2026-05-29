@@ -464,6 +464,10 @@ func (c *Client) backfillFlags(db *sql.DB, logger *slog.Logger, folder string) e
 			uids = append(uids, uid)
 		}
 	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("backfillFlags: iterate rows: %w", err)
+	}
 	rows.Close()
 
 	if len(uids) == 0 {
@@ -560,6 +564,10 @@ func (c *Client) backfillEnvelope(db *sql.DB, logger *slog.Logger, folder string
 		if err := rows.Scan(&uid); err == nil {
 			uids = append(uids, uid)
 		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("backfillEnvelope: iterate rows: %w", err)
 	}
 	rows.Close()
 

@@ -684,16 +684,15 @@ func handleSearchEmails(db *sql.DB) server.ToolHandlerFunc {
 		var results []searchResult
 		for rows.Next() {
 			var m searchResult
-			var rawDate sql.NullTime
+			var rawDateStr sql.NullString
 			var rawIsRead, rawIsReplied sql.NullInt64
 			var attJSON string
-			if err := rows.Scan(&m.ID, &m.AccountID, &m.Folder, &m.Subject, &m.Sender, &m.RecipientsTo, &rawDate, &rawIsRead, &rawIsReplied, &attJSON, &m.BodyText); err != nil {
+			if err := rows.Scan(&m.ID, &m.AccountID, &m.Folder, &m.Subject, &m.Sender, &m.RecipientsTo, &rawDateStr, &rawIsRead, &rawIsReplied, &attJSON, &m.BodyText); err != nil {
 				slog.Warn("search_emails: row scan failed", "err", err)
 				continue
 			}
-			if rawDate.Valid {
-				s := rawDate.Time.UTC().Format(time.RFC3339)
-				m.DateUTC = &s
+			if rawDateStr.Valid && rawDateStr.String != "" {
+				m.DateUTC = &rawDateStr.String
 			}
 			if rawIsRead.Valid {
 				v := rawIsRead.Int64 != 0
