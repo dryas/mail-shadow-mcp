@@ -51,10 +51,10 @@ func New(db *sql.DB, cfg *config.Config, version string, fs *fileserver.Server) 
 	)
 
 	s.AddTool(toolListAccountsAndFolders(), handleListAccountsAndFolders(db, cfg))
-	s.AddTool(toolGetRecentActivity(), handleGetRecentActivity(db))
+	s.AddTool(toolGetRecentActivity(), handleGetRecentActivity(db, cfg))
 	s.AddTool(toolGetEmailContent(), handleGetEmailContent(db))
-	s.AddTool(toolSearchEmails(), handleSearchEmails(db))
-	s.AddTool(toolGetThread(), handleGetThread(db))
+	s.AddTool(toolSearchEmails(), handleSearchEmails(db, cfg))
+	s.AddTool(toolGetThread(), handleGetThread(db, cfg))
 	s.AddTool(toolDownloadAttachments(), handleDownloadAttachments(cfg))
 	s.AddTool(toolDeleteMail(), handleDeleteMail(cfg, db))
 	if fs != nil {
@@ -288,7 +288,7 @@ type mailSummary struct {
 const fetchAttachmentsSubquery = `COALESCE((SELECT json_group_array(json_object('filename',COALESCE(filename,''),'content_type',COALESCE(content_type,''),'size_bytes',COALESCE(size_bytes,0)))
 			           FROM mail_attachments WHERE entry_id = e.id), '[]')`
 
-func handleGetRecentActivity(db *sql.DB) server.ToolHandlerFunc {
+func handleGetRecentActivity(db *sql.DB, cfg *config.Config) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		account := req.GetString("account", "")
 		folder := req.GetString("folder", "")
@@ -330,6 +330,7 @@ func handleGetRecentActivity(db *sql.DB) server.ToolHandlerFunc {
 		} else if isRead == "false" {
 			qb.and("e.is_read = 0")
 		}
+		applyTrashExclusions(qb, cfg)
 		qb.write(` ORDER BY e.date_utc DESC NULLS LAST LIMIT ? OFFSET ?`)
 		qb.args = append(qb.args, limit, offset)
 
@@ -585,7 +586,7 @@ func parseSearchParams(req mcp.CallToolRequest) searchParams {
 	return p
 }
 
-func buildSearchQuery(p searchParams) *queryBuilder {
+func buildSearchQuery(p searchParams, cfg *config.Config) *queryBuilder {
 	bodyExpr := `''`
 	if p.includeBody {
 		bodyExpr = `COALESCE((SELECT body_text FROM mail_content WHERE entry_id = e.id), '')`
@@ -637,6 +638,7 @@ func buildSearchQuery(p searchParams) *queryBuilder {
 	} else if p.isRead == "false" {
 		qb.and("e.is_read = 0")
 	}
+	applyTrashExclusions(qb, cfg)
 
 	qb.write(` ORDER BY e.date_utc DESC NULLS LAST LIMIT ? OFFSET ?`)
 	qb.args = append(qb.args, p.limit, p.offset)
@@ -652,7 +654,19 @@ func applyAttachmentFilter(qb *queryBuilder, hasAttachments string) {
 	}
 }
 
-func handleSearchEmails(db *sql.DB) server.ToolHandlerFunc {
+// applyTrashExclusions adds a NOT (account_id = ? AND imap_folder = ?) condition
+// for every account that has a trash_folder configured.
+// This ensures soft-deleted emails never appear in query results, regardless of
+// whether the trash folder is included in the sync configuration.
+func applyTrashExclusions(qb *queryBuilder, cfg *config.Config) {
+	for _, acc := range cfg.Accounts {
+		if acc.TrashFolder != "" {
+			qb.and("NOT (e.account_id = ? AND e.imap_folder = ?)", acc.ID, acc.TrashFolder)
+		}
+	}
+}
+
+func handleSearchEmails(db *sql.DB, cfg *config.Config) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		p := parseSearchParams(req)
 		slog.Info("tool called", "tool", "search_emails", "query", p.query, "account", p.account, "sender", p.sender, "date_from", p.dateFrom, "date_to", p.dateTo, "limit", p.limit, "offset", p.offset)
@@ -668,7 +682,7 @@ func handleSearchEmails(db *sql.DB) server.ToolHandlerFunc {
 		if msg := validateDate("date_to", p.dateTo); msg != "" {
 			return mcp.NewToolResultError(msg), nil
 		}
-		qb := buildSearchQuery(p)
+		qb := buildSearchQuery(p, cfg)
 
 		rows, err := db.QueryContext(ctx, qb.sql(), qb.args...)
 		if err != nil {
@@ -891,7 +905,7 @@ func toolGetThread() mcp.Tool {
 	)
 }
 
-func handleGetThread(db *sql.DB) server.ToolHandlerFunc {
+func handleGetThread(db *sql.DB, cfg *config.Config) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		emailID, err := req.RequireString("email_id")
 		if err != nil {
@@ -901,7 +915,7 @@ func handleGetThread(db *sql.DB) server.ToolHandlerFunc {
 
 		// Recursive CTE: start from the given email and walk the thread
 		// both forward (replies to this mail) and backward (what this mail replies to).
-		const query = `
+		const queryCTE = `
 			WITH RECURSIVE thread(id, message_id, in_reply_to) AS (
 				SELECT id, message_id, in_reply_to
 				FROM mail_entries WHERE id = ?
@@ -916,10 +930,24 @@ func handleGetThread(db *sql.DB) server.ToolHandlerFunc {
 				e.recipients_to, e.date_utc, e.is_read, e.is_replied, ` +
 			fetchAttachmentsSubquery + `
 			FROM mail_entries e
-			JOIN thread t ON e.id = t.id
-			ORDER BY e.date_utc ASC NULLS LAST`
+			JOIN thread t ON e.id = t.id`
 
-		rows, err := db.QueryContext(ctx, query, emailID)
+		// Build trash exclusion conditions (applied as WHERE clause on the outer SELECT).
+		var trashConds []string
+		threadArgs := []any{emailID}
+		for _, acc := range cfg.Accounts {
+			if acc.TrashFolder != "" {
+				trashConds = append(trashConds, "NOT (e.account_id = ? AND e.imap_folder = ?)")
+				threadArgs = append(threadArgs, acc.ID, acc.TrashFolder)
+			}
+		}
+		query := queryCTE
+		if len(trashConds) > 0 {
+			query += " WHERE " + strings.Join(trashConds, " AND ")
+		}
+		query += " ORDER BY e.date_utc ASC NULLS LAST"
+
+		rows, err := db.QueryContext(ctx, query, threadArgs...)
 		if err != nil {
 			return mcp.NewToolResultError(fmtDBError(err)), nil
 		}

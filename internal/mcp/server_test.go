@@ -107,9 +107,7 @@ func TestHandleListAccountsAndFolders_WithSyncState(t *testing.T) {
 func TestHandleGetRecentActivity_Basic(t *testing.T) {
 	database := openTestDB(t)
 	seedEntry(t, database, "acc1:INBOX:1", "acc1", "INBOX", "Hello world", "alice@example.com", 1)
-	h := handleGetRecentActivity(database)
-
-	out := callTool(t, h, map[string]any{"limit": float64(10)})
+	h := handleGetRecentActivity(database, &config.Config{})
 
 	var page pagedResult[mailSummary]
 	if err := json.Unmarshal([]byte(out), &page); err != nil {
@@ -130,7 +128,7 @@ func TestHandleGetRecentActivity_FilterByAccount(t *testing.T) {
 	database := openTestDB(t)
 	seedEntry(t, database, "acc1:INBOX:1", "acc1", "INBOX", "Msg A", "a@example.com", 1)
 	seedEntry(t, database, "acc2:INBOX:2", "acc2", "INBOX", "Msg B", "b@example.com", 2)
-	h := handleGetRecentActivity(database)
+	h := handleGetRecentActivity(database, &config.Config{})
 
 	out := callTool(t, h, map[string]any{"account": "acc1"})
 	var page pagedResult[mailSummary]
@@ -179,7 +177,7 @@ func TestHandleSearchEmails_FullText(t *testing.T) {
 	database := openTestDB(t)
 	seedEntry(t, database, "acc1:INBOX:1", "acc1", "INBOX", "Invoice Q4", "billing@example.com", 1)
 	database.Exec(`INSERT INTO mail_content_fts (entry_id, subject, body_text) VALUES ('acc1:INBOX:1','Invoice Q4','Please find the attached invoice for Q4')`)
-	h := handleSearchEmails(database)
+	h := handleSearchEmails(database, &config.Config{})
 
 	out := callTool(t, h, map[string]any{"query": "invoice"})
 	var page pagedResult[mailSummary]
@@ -198,7 +196,7 @@ func TestHandleSearchEmails_NoQuery_SenderFilter(t *testing.T) {
 	database := openTestDB(t)
 	seedEntry(t, database, "acc1:INBOX:1", "acc1", "INBOX", "Msg A", "alice@example.com", 1)
 	seedEntry(t, database, "acc1:INBOX:2", "acc1", "INBOX", "Msg B", "bob@example.com", 2)
-	h := handleSearchEmails(database)
+	h := handleSearchEmails(database, &config.Config{})
 
 	out := callTool(t, h, map[string]any{"sender": "alice"})
 	var page pagedResult[mailSummary]
@@ -217,7 +215,7 @@ func TestHandleSearchEmails_LimitDefault(t *testing.T) {
 			VALUES (?,?,?,?,?,?,?,?)`,
 			"acc1:INBOX:"+string(rune('0'+i)), "acc1", i, "INBOX", "Subject", "a@b.com", "", "")
 	}
-	h := handleSearchEmails(database)
+	h := handleSearchEmails(database, &config.Config{})
 	out := callTool(t, h, map[string]any{})
 	var page pagedResult[mailSummary]
 	json.Unmarshal([]byte(out), &page)
@@ -247,7 +245,7 @@ func TestHandleGetThread_Basic(t *testing.T) {
 	// Unrelated mail that must NOT appear in the thread.
 	seedEntry(t, database, "acc1:INBOX:4", "acc1", "INBOX", "Unrelated", "c@example.com", 4)
 
-	h := handleGetThread(database)
+	h := handleGetThread(database, &config.Config{})
 	out := callTool(t, h, map[string]any{"email_id": "acc1:INBOX:2"})
 
 	var results []mailSummary
@@ -267,7 +265,7 @@ func TestHandleGetThread_Basic(t *testing.T) {
 
 func TestHandleGetThread_NotFound(t *testing.T) {
 	database := openTestDB(t)
-	h := handleGetThread(database)
+	h := handleGetThread(database, &config.Config{})
 	out := callTool(t, h, map[string]any{"email_id": "acc1:INBOX:99"})
 	var results []mailSummary
 	json.Unmarshal([]byte(out), &results)
