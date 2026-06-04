@@ -1,4 +1,4 @@
-// MAIL-SHADOW-MCP — Structured, read-only email access for AI agents.
+// MAIL-SHADOW-MCP — Structured, email access for AI agents.
 //
 // Copyright (c) 2026 Benjamin Kaiser.
 // SPDX-License-Identifier: Apache-2.0
@@ -17,6 +17,6 @@ var version = "dev"
 const banner = `
   ╔══════════════════════════════════════╗
   ║       mail-shadow-mcp  %s        ║
-  ║  Structured, read-only email access  ║
+  ║  Structured email access for agents  ║
   ╚══════════════════════════════════════╝
 `

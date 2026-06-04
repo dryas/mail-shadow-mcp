@@ -1,4 +1,4 @@
-// MAIL-SHADOW-MCP — Structured, read-only email access for AI agents.
+// MAIL-SHADOW-MCP — Structured, email access for AI agents.
 //
 // Copyright (c) 2026 Benjamin Kaiser.
 // SPDX-License-Identifier: Apache-2.0
@@ -48,9 +48,9 @@ func usage() {
 
 https://github.com/dryas/mail-shadow-mcp
 
-MCP server for structured, read-only email access. Exposes a minimal,
-auditable API surface — AI agents can search and read emails, but cannot
-send, delete, or modify your mailbox.
+MCP server for structured email access via a local shadow database. Exposes
+a minimal, auditable API surface — AI agents can search, read, and
+soft-delete emails, but cannot send or access your IMAP server directly.
 
 Usage:
   mail-shadow-mcp <command> [flags]
