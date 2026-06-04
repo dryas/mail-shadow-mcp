@@ -109,6 +109,8 @@ func TestHandleGetRecentActivity_Basic(t *testing.T) {
 	seedEntry(t, database, "acc1:INBOX:1", "acc1", "INBOX", "Hello world", "alice@example.com", 1)
 	h := handleGetRecentActivity(database, &config.Config{})
 
+	out := callTool(t, h, map[string]any{"limit": float64(10)})
+
 	var page pagedResult[mailSummary]
 	if err := json.Unmarshal([]byte(out), &page); err != nil {
 		t.Fatalf("JSON parse: %v\nraw: %s", err, out)
